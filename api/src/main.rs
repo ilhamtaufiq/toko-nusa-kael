@@ -173,6 +173,16 @@ const SCHEMA: &[&str] = &[
         paid BIGINT NOT NULL,
         change_amount BIGINT NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    "CREATE TABLE IF NOT EXISTS qris_orders (
+        order_id VARCHAR(64) NOT NULL PRIMARY KEY,
+        status VARCHAR(16) NOT NULL,
+        total BIGINT NOT NULL,
+        items_json TEXT NOT NULL,
+        qr_url TEXT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        created_at BIGINT NOT NULL,
+        sale_id BIGINT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     "CREATE TABLE IF NOT EXISTS sale_items (
         id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
         sale_id BIGINT NOT NULL,
@@ -291,6 +301,7 @@ async fn migrate(db: &MySqlPool, data_file: &FsPath) -> Result<(), sqlx::Error> 
     }
     add_column_if_missing(db, "products", "cost", "cost BIGINT NULL").await?;
     add_column_if_missing(db, "sale_items", "cost", "cost BIGINT NULL").await?;
+    add_column_if_missing(db, "sales", "method", "method VARCHAR(10) NOT NULL DEFAULT 'cash'").await?;
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM products").fetch_one(db).await?;
     if count > 0 {
         return Ok(());
@@ -379,6 +390,7 @@ struct AppState {
     db: MySqlPool,
     admin_password: Option<String>,
     sessions: Mutex<HashSet<String>>,
+    midtrans: Option<Midtrans>,
 }
 
 type Shared = Arc<AppState>;
@@ -1145,6 +1157,336 @@ async fn analytics(State(s): State<Shared>, headers: HeaderMap, Query(q): Query<
     Ok(Json(a))
 }
 
+// ---------- QRIS (Midtrans Core API) ----------
+
+use axum::response::{IntoResponse, Response};
+use sha2::{Digest, Sha512};
+
+struct Midtrans {
+    key: String,
+    base: String,
+    http: reqwest::Client,
+}
+
+/// Kode pesanan unik. Bagian acak membuat URL QR dan status tidak bisa ditebak.
+fn new_order_id() -> String {
+    let rnd: String = rand::rng().sample_iter(Alphanumeric).take(10).map(char::from).collect();
+    format!("NK{}{}", now(), rnd)
+}
+
+/// Status pembayaran diambil langsung dari Midtrans. Ini sumber kebenarannya, bukan body webhook.
+async fn midtrans_status(mt: &Midtrans, order_id: &str) -> Result<(String, String), ApiError> {
+    let res = mt
+        .http
+        .get(format!("{}/v2/{}/status", mt.base, order_id))
+        .basic_auth(&mt.key, Some(""))
+        .send()
+        .await
+        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Midtrans tidak dapat dihubungi."))?;
+    let v: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Respons Midtrans tidak valid."))?;
+    Ok((
+        v["transaction_status"].as_str().unwrap_or("").to_string(),
+        v["gross_amount"].as_str().unwrap_or("").to_string(),
+    ))
+}
+
+/// Membuat penjualan di dalam transaksi database yang sudah berjalan: kunci baris produk, cek stok, kurangi stok.
+async fn create_sale_tx(tx: &mut sqlx::Transaction<'_, MySql>, lines: &[(u32, u32)], paid: u64, method: &str) -> Result<Sale, ApiError> {
+    let mut items = Vec::new();
+    let mut total: u64 = 0;
+    for (pid, qty) in lines {
+        let row = sqlx::query("SELECT * FROM products WHERE id = ? FOR UPDATE")
+            .bind(*pid as i64)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| fail(StatusCode::UNPROCESSABLE_ENTITY, "Ada barang yang sudah tidak tersedia."))?;
+        let p = product_row(&row).map_err(db_err)?;
+        if let Some(stock) = p.stock {
+            if stock < *qty {
+                return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, &format!("Stok {} tidak cukup (sisa {}).", p.name, stock)));
+            }
+        }
+        total += p.price as u64 * *qty as u64;
+        items.push(SaleItem { product_id: p.id, name: p.name.clone(), price: p.price, qty: *qty, cost: p.cost });
+    }
+    if paid < total {
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Uang bayar kurang dari total."));
+    }
+    let created_at = now();
+    let res = sqlx::query("INSERT INTO sales (created_at, total, paid, change_amount, method) VALUES (?, ?, ?, ?, ?)")
+        .bind(created_at as i64)
+        .bind(total as i64)
+        .bind(paid as i64)
+        .bind((paid - total) as i64)
+        .bind(method.to_string())
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    let sale_id = res.last_insert_id();
+    for it in &items {
+        sqlx::query("INSERT INTO sale_items (sale_id, product_id, name, price, qty, cost) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(sale_id as i64)
+            .bind(it.product_id as i64)
+            .bind(it.name.clone())
+            .bind(it.price as i64)
+            .bind(it.qty as i64)
+            .bind(it.cost.map(|v| v as i64))
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        sqlx::query("UPDATE products SET stock = stock - ? WHERE id = ? AND stock IS NOT NULL")
+            .bind(it.qty as i64)
+            .bind(it.product_id as i64)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
+    Ok(Sale { id: sale_id as u32, created_at, items, total, paid, change: paid - total })
+}
+
+/// Menerapkan status dari Midtrans ke pesanan. Dipanggil dari webhook dan dari cek status.
+/// Penjualan hanya dibuat sekali (dikunci dengan FOR UPDATE), jadi webhook dobel tidak mencatat dua kali.
+async fn apply_status(s: &AppState, order_id: &str, mt_status: &str, gross: &str) -> Result<String, ApiError> {
+    let next = match mt_status {
+        "settlement" => "paid",
+        "expire" => "expired",
+        "cancel" | "deny" | "failed" => "failed",
+        _ => return Ok("pending".into()),
+    };
+    let mut tx = s.db.begin().await.map_err(db_err)?;
+    let row = sqlx::query("SELECT status, total, items_json FROM qris_orders WHERE order_id = ? FOR UPDATE")
+        .bind(order_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "Pesanan tidak ditemukan."))?;
+    let local: String = row.try_get("status").map_err(db_err)?;
+    if local != "pending" {
+        tx.rollback().await.map_err(db_err)?;
+        return Ok(local);
+    }
+    let total: i64 = row.try_get("total").map_err(db_err)?;
+    let items_json: String = row.try_get("items_json").map_err(db_err)?;
+
+    if next != "paid" {
+        tx.rollback().await.map_err(db_err)?;
+        sqlx::query("UPDATE qris_orders SET status = ? WHERE order_id = ? AND status = 'pending'")
+            .bind(next)
+            .bind(order_id.to_string())
+            .execute(&s.db)
+            .await
+            .map_err(db_err)?;
+        return Ok(next.into());
+    }
+
+    // Nominal yang dibayar harus sama dengan tagihan
+    let paid_ok = gross.parse::<f64>().map(|g| (g - total as f64).abs() < 0.5).unwrap_or(false);
+    if !paid_ok {
+        tx.rollback().await.map_err(db_err)?;
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Nominal pembayaran tidak sama dengan tagihan."));
+    }
+    let lines: Vec<(u32, u32)> =
+        serde_json::from_str(&items_json).map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "Data pesanan rusak."))?;
+    match create_sale_tx(&mut tx, &lines, total as u64, "qris").await {
+        Ok(sale) => {
+            sqlx::query("UPDATE qris_orders SET status = 'paid', sale_id = ? WHERE order_id = ?")
+                .bind(sale.id as i64)
+                .bind(order_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            tx.commit().await.map_err(db_err)?;
+            Ok("paid".into())
+        }
+        Err(_) => {
+            // Uang sudah masuk tetapi stok keburu habis: tandai untuk ditinjau manual, jangan diam-diam gagal
+            tx.rollback().await.map_err(db_err)?;
+            eprintln!("PERLU TINJAUAN: pesanan {order_id} sudah dibayar tetapi stok tidak cukup");
+            sqlx::query("UPDATE qris_orders SET status = 'review' WHERE order_id = ? AND status = 'pending'")
+                .bind(order_id.to_string())
+                .execute(&s.db)
+                .await
+                .map_err(db_err)?;
+            Ok("review".into())
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct QrisIn {
+    items: Vec<SaleLine>,
+}
+
+#[derive(Serialize)]
+struct QrisOut {
+    order_id: String,
+    total: i64,
+    expires_at: u64,
+}
+
+fn midtrans_or_503(s: &AppState) -> Result<&Midtrans, ApiError> {
+    s.midtrans
+        .as_ref()
+        .ok_or_else(|| fail(StatusCode::SERVICE_UNAVAILABLE, "QRIS belum aktif: atur MIDTRANS_SERVER_KEY di server."))
+}
+
+async fn qris_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<QrisIn>) -> ApiResult<QrisOut> {
+    require_admin(&s, &headers).await?;
+    let mt = midtrans_or_503(&s)?;
+    if b.items.is_empty() || b.items.len() > 100 {
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Keranjang kosong atau terlalu banyak barang."));
+    }
+    let mut need: BTreeMap<u32, u32> = BTreeMap::new();
+    for line in &b.items {
+        if line.qty == 0 || line.qty > 999 {
+            return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Jumlah tiap barang harus 1 sampai 999."));
+        }
+        *need.entry(line.product_id).or_insert(0) += line.qty;
+    }
+
+    // Total dihitung dari harga di server. Stok dikurangi nanti, saat pembayaran lunas.
+    let mut total: i64 = 0;
+    let mut lines: Vec<(u32, u32)> = Vec::new();
+    for (pid, qty) in &need {
+        let row = sqlx::query("SELECT * FROM products WHERE id = ?")
+            .bind(*pid as i64)
+            .fetch_optional(&s.db)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| fail(StatusCode::UNPROCESSABLE_ENTITY, "Ada barang yang sudah tidak tersedia."))?;
+        let p = product_row(&row).map_err(db_err)?;
+        if let Some(stock) = p.stock {
+            if stock < *qty {
+                return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, &format!("Stok {} tidak cukup (sisa {}).", p.name, stock)));
+            }
+        }
+        total += p.price as i64 * *qty as i64;
+        lines.push((*pid, *qty));
+    }
+    if total <= 0 || total > 1_000_000_000 {
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Total transaksi tidak valid."));
+    }
+
+    let order_id = new_order_id();
+    let body = serde_json::json!({
+        "payment_type": "qris",
+        "transaction_details": { "order_id": order_id, "gross_amount": total }
+    });
+    let res = mt
+        .http
+        .post(format!("{}/v2/charge", mt.base))
+        .basic_auth(&mt.key, Some(""))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Midtrans tidak dapat dihubungi."))?;
+    let v: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Respons Midtrans tidak valid."))?;
+    if v["status_code"].as_str() != Some("201") {
+        let msg = v["status_message"].as_str().unwrap_or("Midtrans menolak permintaan.");
+        return Err(fail(StatusCode::BAD_GATEWAY, &format!("Midtrans: {msg}")));
+    }
+    let qr_url = v["actions"]
+        .as_array()
+        .and_then(|acts| {
+            acts.iter()
+                .find(|a| a["name"] == "generate-qr-code-v2")
+                .or_else(|| acts.iter().find(|a| a["name"] == "generate-qr-code"))
+        })
+        .and_then(|a| a["url"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| fail(StatusCode::BAD_GATEWAY, "QR tidak ada di respons Midtrans."))?;
+
+    // QR QRIS dari Midtrans kedaluwarsa dalam 15 menit
+    let expires_at = now() + 900;
+    sqlx::query("INSERT INTO qris_orders (order_id, status, total, items_json, qr_url, expires_at, created_at) VALUES (?, 'pending', ?, ?, ?, ?, ?)")
+        .bind(order_id.clone())
+        .bind(total)
+        .bind(serde_json::to_string(&lines).unwrap_or_default())
+        .bind(qr_url)
+        .bind(expires_at as i64)
+        .bind(now() as i64)
+        .execute(&s.db)
+        .await
+        .map_err(db_err)?;
+
+    Ok(Json(QrisOut { order_id, total, expires_at }))
+}
+
+async fn qris_status(State(s): State<Shared>, headers: HeaderMap, Path(order_id): Path<String>) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let local: String = sqlx::query("SELECT status FROM qris_orders WHERE order_id = ?")
+        .bind(order_id.clone())
+        .fetch_optional(&s.db)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "Pesanan tidak ditemukan."))?
+        .try_get("status")
+        .map_err(db_err)?;
+    let status = if local == "pending" {
+        let mt = midtrans_or_503(&s)?;
+        let (ms, gross) = midtrans_status(mt, &order_id).await?;
+        apply_status(&s, &order_id, &ms, &gross).await?
+    } else {
+        local
+    };
+    let sale_id: Option<i64> = sqlx::query("SELECT sale_id FROM qris_orders WHERE order_id = ?")
+        .bind(order_id.clone())
+        .fetch_optional(&s.db)
+        .await
+        .map_err(db_err)?
+        .and_then(|r| r.try_get::<Option<i64>, _>("sale_id").ok().flatten());
+    Ok(Json(serde_json::json!({ "order_id": order_id, "status": status, "sale_id": sale_id })))
+}
+
+/// Gambar QR diambil dari Midtrans lewat server, supaya kunci server tidak pernah sampai ke browser.
+/// URL-nya memuat kode acak, jadi tidak bisa ditebak.
+async fn qris_qr(State(s): State<Shared>, Path(order_id): Path<String>) -> Result<Response, ApiError> {
+    let mt = midtrans_or_503(&s)?;
+    let qr_url: String = sqlx::query("SELECT qr_url FROM qris_orders WHERE order_id = ?")
+        .bind(order_id)
+        .fetch_optional(&s.db)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "Pesanan tidak ditemukan."))?
+        .try_get("qr_url")
+        .map_err(db_err)?;
+    // Kunci hanya dikirim ke host Midtrans yang dikenal
+    let trusted = qr_url.starts_with("https://api.midtrans.com/") || qr_url.starts_with("https://api.sandbox.midtrans.com/");
+    let req = mt.http.get(&qr_url);
+    let req = if trusted { req.basic_auth(&mt.key, Some("")) } else { req };
+    let res = req.send().await.map_err(|_| fail(StatusCode::BAD_GATEWAY, "Gambar QR tidak dapat diambil."))?;
+    let bytes = res.bytes().await.map_err(|_| fail(StatusCode::BAD_GATEWAY, "Gambar QR tidak dapat diambil."))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+struct Notify {
+    order_id: String,
+    status_code: String,
+    gross_amount: String,
+    signature_key: String,
+}
+
+/// Webhook dari Midtrans. Signature diverifikasi dulu, lalu status diambil ulang dari Midtrans.
+async fn midtrans_notify(State(s): State<Shared>, Json(n): Json<Notify>) -> Result<StatusCode, ApiError> {
+    let mt = midtrans_or_503(&s)?;
+    let raw = format!("{}{}{}{}", n.order_id, n.status_code, n.gross_amount, mt.key);
+    let expected = hex::encode(Sha512::digest(raw.as_bytes()));
+    if !eq_ct(&expected, &n.signature_key) {
+        return Err(fail(StatusCode::FORBIDDEN, "Signature tidak valid."));
+    }
+    let (ms, gross) = midtrans_status(mt, &n.order_id).await?;
+    apply_status(&s, &n.order_id, &ms, &gross).await?;
+    Ok(StatusCode::OK)
+}
+
 // ---------- Main ----------
 
 #[tokio::main]
@@ -1169,10 +1511,24 @@ async fn main() {
         eprintln!("PERINGATAN: ADMIN_PASSWORD kosong atau kurang dari 8 karakter. Panel admin dinonaktifkan.");
     }
 
+    // Midtrans aktif hanya jika server key diisi. Tanpa itu, fitur QRIS nonaktif, kasir tunai tetap jalan.
+    let midtrans = std::env::var("MIDTRANS_SERVER_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .map(|key| Midtrans {
+            key,
+            base: std::env::var("MIDTRANS_API_BASE").unwrap_or_else(|_| "https://api.sandbox.midtrans.com".into()),
+            http: reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("HTTP client gagal dibuat"),
+        });
+    if midtrans.is_none() {
+        eprintln!("INFO: MIDTRANS_SERVER_KEY kosong. Pembayaran QRIS dinonaktifkan.");
+    }
+
     let state: Shared = Arc::new(AppState {
         db,
         admin_password,
         sessions: Mutex::new(HashSet::new()),
+        midtrans,
     });
 
     let api = Router::new()
@@ -1195,7 +1551,11 @@ async fn main() {
         .route("/admin/settings", put(settings_put))
         .route("/admin/barcode", get(barcode_lookup))
         .route("/admin/sales", get(sales_list).post(sale_create))
-        .route("/admin/analytics", get(analytics));
+        .route("/admin/analytics", get(analytics))
+        .route("/admin/qris", post(qris_create))
+        .route("/admin/qris/{order_id}", get(qris_status))
+        .route("/qris/{order_id}/qr", get(qris_qr))
+        .route("/midtrans/notify", post(midtrans_notify));
 
     let mut app = Router::new().nest("/api", api).with_state(state);
 

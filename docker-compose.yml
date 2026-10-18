@@ -8,6 +8,9 @@ services:
       - "8080"
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Isi ADMIN_PASSWORD (min. 8 karakter) di file .env}
+      # Midtrans (QRIS). Kosongkan untuk menonaktifkan QRIS. Pakai server key sandbox dulu.
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
+      MIDTRANS_API_BASE: ${MIDTRANS_API_BASE:-https://api.sandbox.midtrans.com}
       DATABASE_URL: mysql://${DB_USER:-nusa}:${DB_PASSWORD:?Isi DB_PASSWORD di file .env}@db:3306/${DB_NAME:-nusa_kael}
     depends_on:
       db:

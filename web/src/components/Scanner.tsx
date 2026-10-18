@@ -21,27 +21,28 @@ const ZX_FORMATS = [
   BarcodeFormat.CODE_128,
   BarcodeFormat.CODE_39,
 ];
-// Resolusi setinggi yang didukung kamera: browser memilih yang terbesar yang tersedia
+// Full HD cukup tajam untuk barcode. Resolusi lebih besar membuat kamera gagal tampil di sebagian HP.
 const VIDEO: MediaTrackConstraints = {
   facingMode: { ideal: 'environment' },
-  width: { ideal: 4096 },
-  height: { ideal: 2160 },
+  width: { ideal: 1920 },
+  height: { ideal: 1080 },
 };
+
+/** Buka kamera. Kalau pengaturan resolusi ditolak, ulangi dengan pengaturan bawaan kamera. */
+async function openCamera(): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: false });
+  } catch {
+    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+  }
+}
 const CAMERA_ERROR = 'Kamera tidak bisa dibuka. Izinkan akses kamera, atau pakai scanner USB.';
 
 /** Minta fokus terus-menerus bila perangkat mendukung. Yang tidak didukung dilewati tanpa error. */
 async function tuneFocus(stream: MediaStream): Promise<string> {
   const track = stream.getVideoTracks()[0];
   if (!track) return 'kamera tidak ditemukan';
-  const caps = (track.getCapabilities?.() ?? {}) as {
-    focusMode?: string[];
-    width?: { max?: number };
-    height?: { max?: number };
-  };
-  // Naikkan ke resolusi maksimum yang dilaporkan kamera
-  if (caps.width?.max && caps.height?.max) {
-    await track.applyConstraints({ width: caps.width.max, height: caps.height.max }).catch(() => {});
-  }
+  const caps = (track.getCapabilities?.() ?? {}) as { focusMode?: string[] };
   let focus = 'tidak didukung';
   if (caps.focusMode?.includes('continuous')) {
     await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {});
@@ -112,7 +113,7 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
       (async () => {
         let stream: MediaStream;
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: false });
+          stream = await openCamera();
         } catch {
           return fail();
         }
@@ -151,7 +152,7 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
       (async () => {
         let stream: MediaStream;
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: false });
+          stream = await openCamera();
         } catch {
           return fail();
         }

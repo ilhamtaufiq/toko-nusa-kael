@@ -141,6 +141,11 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   const [cart, setCart] = useState<Line[]>([]);
   const [paidText, setPaidText] = useState('');
   const [code, setCode] = useState('');
+  const bufRef = useRef('');
+  const updateCode = useCallback((v: string) => {
+    bufRef.current = v;
+    setCode(v);
+  }, []);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('Semua');
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -312,37 +317,38 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     [call, addProduct, products, focusScan, beep],
   );
 
-  // Kalau tidak ada elemen yang sedang fokus, ketikan dari scanner tetap ditangkap:
-  // karakter dialihkan ke kolom scan, dan Enter memproses kode yang terkumpul.
+  // Scanner dibaca langsung dari tombol yang ditekan, tanpa bergantung pada kolom menerima teks.
+  // Di layar sentuh kolom memakai inputMode="none"; di sana teks dari scanner sering tidak masuk ke kolom,
+  // padahal tombolnya tetap terkirim. Kode dikumpulkan di bufRef (bukan state) supaya tidak ada karakter
+  // yang hilang saat scanner mengetik cepat. Hanya input lain (uang diterima, pencarian) yang dibiarkan.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      // Fokus bisa sedang di tombol (setelah menekan tile) atau di area kosong. Keduanya dialihkan ke kolom scan.
-      // Yang dibiarkan hanya saat mengetik di input lain (kolom scan sendiri, uang diterima, pencarian).
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
       const active = document.activeElement as HTMLElement | null;
-      if (active && active.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (active && active !== codeRef.current && active.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (e.key === 'Enter') {
-        const value = codeRef.current?.value ?? '';
+        const value = bufRef.current || codeRef.current?.value || '';
         if (!value) return;
         e.preventDefault();
-        setCode('');
+        updateCode('');
         addByCode(value);
         return;
       }
+      // Ketikan dari keyboard layar tidak punya nama tombol yang jelas ("Unidentified"), biarkan masuk ke kolom.
       if (e.key.length === 1) {
         e.preventDefault();
-        setCode((c) => c + e.key);
-        focusScan();
+        updateCode(bufRef.current + e.key);
+        if (active !== codeRef.current) focusScan();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusScan, addByCode]);
+  }, [focusScan, addByCode, updateCode]);
 
   function onCodeSubmit(e: FormEvent) {
     e.preventDefault();
-    const value = code;
-    setCode('');
+    const value = bufRef.current || code;
+    updateCode('');
     addByCode(value);
   }
 
@@ -490,7 +496,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
               ref={codeRef}
               className="k-scan-input"
               value={code}
-              onChange={(e) => setCode(e.target.value)}
+              onChange={(e) => updateCode(e.target.value)}
               placeholder="Scan barcode atau QR, lalu Enter"
               aria-label="Kode barcode"
               autoComplete="off"

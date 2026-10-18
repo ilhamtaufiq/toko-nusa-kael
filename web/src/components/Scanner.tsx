@@ -24,7 +24,7 @@ const ZX_FORMATS = [
 // Resolusi sedang sudah cukup untuk membaca barcode, dan jauh lebih cepat dari resolusi penuh
 const VIDEO: MediaTrackConstraints = {
   facingMode: { ideal: 'environment' },
-  width: { ideal: 960 },
+  width: { ideal: 1280 },
   height: { ideal: 720 },
 };
 const CAMERA_ERROR = 'Kamera tidak bisa dibuka. Izinkan akses kamera, atau pakai scanner USB.';
@@ -71,6 +71,13 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
         if (!alive) {
           stream.getTracks().forEach((t) => t.stop());
           return;
+        }
+        // Minta fokus terus-menerus, supaya barcode tetap tajam saat kamera digerakkan.
+        // Tidak semua HP mendukungnya; yang tidak didukung dilewati.
+        const track = stream.getVideoTracks()[0];
+        const caps = (track?.getCapabilities?.() ?? {}) as { focusMode?: string[] };
+        if (track && caps.focusMode?.includes('continuous')) {
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {});
         }
         video.srcObject = stream;
         await video.play().catch(() => {});

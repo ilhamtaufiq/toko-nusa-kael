@@ -1,0 +1,10 @@
+---
+import Base from '../layouts/Base.astro';
+import Kasir from '../components/Kasir';
+import '../styles/admin.css';
+import '../styles/kasir.css';
+---
+
+<Base title="Kasir — Toko Nusa Kael" description="Kasir toko Nusa Kael" noindex>
+  <Kasir client:only="react" />
+</Base>

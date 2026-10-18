@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { rupiah, type Product, type Promo, type Settings } from '../lib/api';
-import Pos from './Pos';
+import Scanner from './Scanner';
 
 type Subscriber = { id: number; name: string; whatsapp: string; created_at: number };
-type Tab = 'kasir' | 'produk' | 'promo' | 'pelanggan' | 'pengaturan';
+type Tab = 'produk' | 'promo' | 'pelanggan' | 'pengaturan';
 
 const KEY = 'nk_admin_token';
 const CATEGORIES = ['Sembako', 'Segar', 'Minuman', 'Camilan', 'Rumah'];
@@ -112,7 +112,7 @@ function useApi(token: string, onExpire: () => void) {
 }
 
 function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
-  const [tab, setTab] = useState<Tab>('kasir');
+  const [tab, setTab] = useState<Tab>('produk');
   const call = useApi(token, onExpire);
 
   const logout = async () => {
@@ -125,17 +125,17 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
       <header className="admin-bar">
         <h1>Admin Nusa Kael</h1>
         <div className="tabs" role="group" aria-label="Bagian admin">
-          {(['kasir', 'produk', 'promo', 'pelanggan', 'pengaturan'] as Tab[]).map((t) => (
+          {(['produk', 'promo', 'pelanggan', 'pengaturan'] as Tab[]).map((t) => (
             <button key={t} className="tab" aria-pressed={tab === t} onClick={() => setTab(t)}>
               {t[0].toUpperCase() + t.slice(1)}
             </button>
           ))}
         </div>
         <span className="spacer" />
+        <a className="btn ghost" href="/kasir/">Buka kasir</a>
         <a className="btn ghost" href="/" target="_blank" rel="noopener noreferrer">Lihat situs</a>
         <button className="btn ghost" onClick={logout}>Keluar</button>
       </header>
-      {tab === 'kasir' && <Pos call={call} />}
       {tab === 'produk' && <Products call={call} />}
       {tab === 'promo' && <Promos call={call} />}
       {tab === 'pelanggan' && <Subscribers call={call} />}
@@ -156,6 +156,7 @@ const emptyProduct = { name: '', category: 'Sembako', price: '', unit: '', emoji
 
 function Products({ call }: { call: Call }) {
   const [items, setItems] = useState<Product[]>([]);
+  const [scanOpen, setScanOpen] = useState(false);
   const [form, setForm] = useState(emptyProduct);
   const [editId, setEditId] = useState<number | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -218,10 +219,36 @@ function Products({ call }: { call: Call }) {
           <label>Emoji<input value={form.emoji} onChange={set('emoji')} maxLength={16} required /></label>
           <label>Label (opsional)<input value={form.tag} onChange={set('tag')} maxLength={20} placeholder="Terlaris" /></label>
         </div>
-        <label>
-          Barcode / QR (opsional)
-          <input value={form.barcode} onChange={set('barcode')} maxLength={40} placeholder="Scan atau ketik kode" inputMode="text" />
-        </label>
+        <div className="scan-field">
+          <label htmlFor="prod-barcode">Barcode / QR (opsional)</label>
+          <div className="scan-row">
+            <input
+              id="prod-barcode"
+              value={form.barcode}
+              onChange={set('barcode')}
+              maxLength={40}
+              placeholder="Scan atau ketik kode"
+              autoComplete="off"
+            />
+            <button type="button" className="btn ghost" onClick={() => setScanOpen((v) => !v)}>
+              {scanOpen ? 'Tutup' : 'Pindai'}
+            </button>
+          </div>
+        </div>
+        {scanOpen && (
+          <Scanner
+            onDetect={(code) => {
+              setForm((f) => ({ ...f, barcode: code }));
+              setScanOpen(false);
+              setMsg({ ok: true, text: `Barcode ${code} terisi.` });
+            }}
+            onError={(m) => {
+              setMsg({ ok: false, text: m });
+              setScanOpen(false);
+            }}
+            onClose={() => setScanOpen(false)}
+          />
+        )}
         <label>
           Stok (kosongkan jika tidak dilacak)
           <input type="number" min={0} max={1000000} value={form.stock} onChange={set('stock')} />

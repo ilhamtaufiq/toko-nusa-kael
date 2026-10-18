@@ -29,15 +29,18 @@ try {
   const phone = (await ask('Nomor HP GoBiz (contoh 0812xxxxxxx): ')).trim();
   const provider = new GopayProvider({ logger, onTokenRefreshed: saveSession });
   const challenge = await provider.requestOtp(phone);
-  console.log('OTP sudah dikirim. Masukkan kode yang diterima.');
+  // Tanpa otpToken, GoPay tidak mengirim OTP. Jangan menunggu kode yang tidak akan datang.
+  if (!challenge?.otpToken) throw new Error('GoPay tidak mengirim tantangan OTP untuk nomor ini.');
+  console.log('OTP sudah diminta ke GoPay. Masukkan kode angka yang diterima (SMS, WhatsApp, atau aplikasi).');
   const otp = (await ask('Kode OTP: ')).trim();
   await provider.verifyOtp({ otp, otpToken: challenge.otpToken, phoneNumber: phone });
   await saveSession(provider.exportSession());
   console.log(`Login berhasil. Sesi disimpan di ${SESSION_PATH}.`);
-  console.log('Restart container gateway agar polling aktif.');
+  console.log('Restart service gateway agar polling aktif.');
 } catch (err) {
-  // Jangan cetak detail error provider: bisa memuat data sensitif
-  console.error(`Login gagal: ${err?.code || err?.name || 'error'}. Coba lagi.`);
+  // Pesan GoPay ditampilkan, tapi string panjang mirip token disamarkan
+  const detail = String(err?.message || '').replace(/[A-Za-z0-9_-]{32,}/g, '[disembunyikan]').slice(0, 200);
+  console.error(`Login gagal: ${err?.code || err?.name || 'error'}${detail ? ` - ${detail}` : ''}. Coba lagi.`);
   process.exitCode = 1;
 } finally {
   rl.close();

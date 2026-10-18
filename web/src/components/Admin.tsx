@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { rupiah, type Product, type Promo, type Settings } from '../lib/api';
 import Scanner from './Scanner';
+import Analytics from './Analytics';
 
 type Subscriber = { id: number; name: string; whatsapp: string; created_at: number };
-type Tab = 'produk' | 'promo' | 'pelanggan' | 'pengaturan';
+type Tab = 'produk' | 'analisa' | 'promo' | 'pelanggan' | 'pengaturan';
 
 const KEY = 'nk_admin_token';
 const CATEGORIES = ['Sembako', 'Segar', 'Minuman', 'Camilan', 'Rumah'];
@@ -125,7 +126,7 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
       <header className="admin-bar">
         <h1>Admin Nusa Kael</h1>
         <div className="tabs" role="group" aria-label="Bagian admin">
-          {(['produk', 'promo', 'pelanggan', 'pengaturan'] as Tab[]).map((t) => (
+          {(['produk', 'analisa', 'promo', 'pelanggan', 'pengaturan'] as Tab[]).map((t) => (
             <button key={t} className="tab" aria-pressed={tab === t} onClick={() => setTab(t)}>
               {t[0].toUpperCase() + t.slice(1)}
             </button>
@@ -137,6 +138,7 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
         <button className="btn ghost" onClick={logout}>Keluar</button>
       </header>
       {tab === 'produk' && <Products call={call} />}
+      {tab === 'analisa' && <Analytics call={call} />}
       {tab === 'promo' && <Promos call={call} />}
       {tab === 'pelanggan' && <Subscribers call={call} />}
       {tab === 'pengaturan' && <ShopSettings call={call} />}
@@ -152,7 +154,7 @@ function Notice({ msg }: { msg: { ok: boolean; text: string } | null }) {
 
 /* ---------- Produk ---------- */
 
-const emptyProduct = { name: '', category: 'Sembako', price: '', unit: '', emoji: '', tag: '', barcode: '', stock: '' };
+const emptyProduct = { name: '', category: 'Sembako', price: '', unit: '', emoji: '', tag: '', barcode: '', stock: '', cost: '' };
 
 function Products({ call }: { call: Call }) {
   const [items, setItems] = useState<Product[]>([]);
@@ -175,6 +177,7 @@ function Products({ call }: { call: Call }) {
       tag: form.tag.trim() || null,
       barcode: form.barcode.trim() || null,
       stock: form.stock.trim() === '' ? null : Number(form.stock),
+      cost: form.cost.trim() === '' ? null : Number(form.cost),
     });
     try {
       await call(editId ? `/api/admin/products/${editId}` : '/api/admin/products', {
@@ -253,6 +256,16 @@ function Products({ call }: { call: Call }) {
           Stok (kosongkan jika tidak dilacak)
           <input type="number" min={0} max={1000000} value={form.stock} onChange={set('stock')} />
         </label>
+        <label>
+          Harga beli (Rp, opsional)
+          <input type="number" min={0} max={100000000} value={form.cost} onChange={set('cost')} />
+        </label>
+        {Number(form.cost) > 0 && Number(form.price) > 0 && (
+          <p className="margin-hint">
+            Laba per satuan {rupiah(Number(form.price) - Number(form.cost))} ·
+            margin {(((Number(form.price) - Number(form.cost)) / Number(form.price)) * 100).toFixed(1)}%
+          </p>
+        )}
         <div className="actions">
           <button className="btn" type="submit">{editId ? 'Simpan perubahan' : 'Tambah'}</button>
           {editId && (
@@ -271,11 +284,11 @@ function Products({ call }: { call: Call }) {
             {items.map((p) => (
               <tr key={p.id}>
                 <td aria-hidden="true">{p.emoji}</td>
-                <td>{p.name}<small>per {p.unit}{p.tag ? ` · ${p.tag}` : ''}{p.barcode ? ` · ${p.barcode}` : ''}{p.stock != null ? ` · stok ${p.stock}` : ''}</small></td>
+                <td>{p.name}<small>per {p.unit}{p.tag ? ` · ${p.tag}` : ''}{p.barcode ? ` · ${p.barcode}` : ''}{p.stock != null ? ` · stok ${p.stock}` : ''}{p.cost != null ? ` · beli ${rupiah(p.cost)}` : ' · beli belum diisi'}</small></td>
                 <td>{p.category}</td>
                 <td>{rupiah(p.price)}</td>
                 <td className="row-actions">
-                  <button onClick={() => { setEditId(p.id); setForm({ name: p.name, category: p.category, price: String(p.price), unit: p.unit, emoji: p.emoji, tag: p.tag ?? '', barcode: p.barcode ?? '', stock: p.stock == null ? '' : String(p.stock) }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Ubah</button>
+                  <button onClick={() => { setEditId(p.id); setForm({ name: p.name, category: p.category, price: String(p.price), unit: p.unit, emoji: p.emoji, tag: p.tag ?? '', barcode: p.barcode ?? '', stock: p.stock == null ? '' : String(p.stock), cost: p.cost == null ? '' : String(p.cost) }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Ubah</button>
                   <button className="danger" onClick={() => remove(p)}>Hapus</button>
                 </td>
               </tr>

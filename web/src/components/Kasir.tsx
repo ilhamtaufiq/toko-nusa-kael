@@ -207,12 +207,11 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     [sound],
   );
 
-  // Di layar sentuh, fokus otomatis akan memunculkan keyboard di layar: lewati.
-  // Scanner USB/Bluetooth tetap bekerja karena mengirim input seperti keyboard fisik.
+  // Autofokus selalu aktif supaya scanner USB/Bluetooth langsung bisa dipakai.
+  // Di layar sentuh, keyboard virtual disembunyikan lewat inputMode="none" (kecuali mode ketik manual).
   const [touch] = useState(() => !window.matchMedia('(pointer: fine)').matches);
-  const focusScan = useCallback(() => {
-    if (!touch) codeRef.current?.focus();
-  }, [touch]);
+  const [manual, setManual] = useState(false);
+  const focusScan = useCallback(() => codeRef.current?.focus(), []);
 
   const loadSales = useCallback(() => call<Sale[]>('/api/admin/sales').then(setSales).catch(() => {}), [call]);
   const loadProducts = useCallback(() => getJson<Product[]>('/api/products', []).then(setProducts), []);
@@ -377,8 +376,21 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
               placeholder="Scan barcode atau QR, lalu Enter"
               aria-label="Kode barcode"
               autoComplete="off"
-              inputMode={touch ? 'none' : 'text'}
+              inputMode={touch && !manual ? 'none' : 'text'}
             />
+            {touch && (
+              <button
+                type="button"
+                className={`k-cam${manual ? ' on' : ''}`}
+                aria-pressed={manual}
+                onClick={() => {
+                  setManual((v) => !v);
+                  focusScan();
+                }}
+              >
+                {manual ? 'Scan saja' : 'Ketik'}
+              </button>
+            )}
             <button type="button" className={`k-cam${camOn ? ' on' : ''}`} onClick={() => setCamOn((v) => !v)}>
               {camOn ? 'Tutup kamera' : 'Kamera'}
             </button>

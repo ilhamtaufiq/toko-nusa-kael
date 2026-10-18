@@ -12,6 +12,45 @@
 }
 .spacer { flex: 1; }
 
+/* ===== Analisa penjualan ===== */
+.an { display: grid; gap: 18px; }
+.an-toolbar { display: flex; justify-content: space-between; align-items: end; gap: 14px; flex-wrap: wrap; }
+.an-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.an-chip { border: 2px solid var(--green); background: transparent; color: var(--green); border-radius: 999px; padding: 7px 14px; font: inherit; font-weight: 700; cursor: pointer; }
+.an-chip[aria-pressed="true"] { background: var(--green); color: var(--paper); }
+.an-range { display: flex; gap: 10px; flex-wrap: wrap; }
+.an-range label { display: grid; gap: 4px; font-weight: 700; font-size: .85rem; }
+.an-range input { font: inherit; padding: 9px 10px; border-radius: 10px; border: 2px solid var(--line); background: #fff; }
+.an-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.an-card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 4px; }
+.an-card small { color: var(--muted); font-weight: 700; font-size: .8rem; }
+.an-card strong { font-family: var(--font-display); font-size: 1.45rem; color: var(--green-deep); overflow-wrap: anywhere; }
+.an-card.good strong { color: var(--leaf); }
+.an-card.bad strong { color: var(--chili); }
+.an-warn { background: #fff4d6; border: 1px solid var(--turmeric); border-radius: 12px; padding: 10px 14px; font-weight: 600; }
+.an-error { color: var(--chili); font-weight: 700; }
+.an-empty { color: var(--muted); margin: 0; }
+.an-section { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; }
+.an-section h2 { font-size: 1.1rem; color: var(--green); }
+.an-bars { display: flex; align-items: flex-end; gap: 8px; height: 220px; overflow-x: auto; padding-bottom: 4px; }
+.an-day { flex: 0 0 auto; width: 44px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; }
+.an-bar-pair { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 3px; }
+.an-bar { width: 45%; min-height: 2px; border-radius: 6px 6px 0 0; }
+.an-bar.revenue { background: #e9c46a; }
+.an-bar.profit { background: var(--leaf); }
+.an-bar.profit.neg { background: var(--chili); }
+.an-day small { font-size: .7rem; color: var(--muted); white-space: nowrap; }
+.an-legend { display: flex; gap: 14px; font-size: .85rem; font-weight: 700; color: var(--muted); }
+.an-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
+.dot-revenue { background: #e9c46a; }
+.dot-profit { background: var(--leaf); }
+.an-miss { display: block; color: var(--chili); font-weight: 700; font-size: .75rem; }
+td.pos { color: var(--leaf); font-weight: 700; }
+td.neg { color: var(--chili); font-weight: 700; }
+.an-chips-plain { display: flex; gap: 8px; flex-wrap: wrap; }
+.an-tag { background: var(--cream); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: .85rem; }
+.margin-hint { margin: 0; font-weight: 700; color: var(--leaf); font-size: .9rem; }
+
 /* ===== Pemindai kamera ===== */
 .scanner { display: grid; gap: 8px; }
 .scanner-video { width: 100%; max-height: 260px; border-radius: 12px; background: #000; object-fit: cover; }

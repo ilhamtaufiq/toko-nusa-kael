@@ -37,6 +37,9 @@ struct Product {
     /// None = stok tidak dilacak
     #[serde(default)]
     stock: Option<u32>,
+    /// Harga beli per satuan; None = belum diisi
+    #[serde(default)]
+    cost: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,6 +80,9 @@ struct SaleItem {
     name: String,
     price: u32,
     qty: u32,
+    /// Harga beli saat barang dijual (disimpan sebagai salinan, tidak ikut berubah)
+    #[serde(default)]
+    cost: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -131,7 +137,8 @@ const SCHEMA: &[&str] = &[
         emoji VARCHAR(16) NOT NULL,
         tag VARCHAR(20) NULL,
         barcode VARCHAR(40) NULL UNIQUE,
-        stock BIGINT NULL
+        stock BIGINT NULL,
+        cost BIGINT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     "CREATE TABLE IF NOT EXISTS promos (
         id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -173,6 +180,7 @@ const SCHEMA: &[&str] = &[
         name VARCHAR(80) NOT NULL,
         price BIGINT NOT NULL,
         qty BIGINT NOT NULL,
+        cost BIGINT NULL,
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 ];
@@ -189,6 +197,7 @@ fn seed() -> Legacy {
         tag: tag.map(Into::into),
         barcode: None,
         stock: None,
+        cost: None,
     };
     let promo = |id: u32, title: &str, detail: &str, price: u32, normal_price: u32, hours: u64| Promo {
         id,
@@ -261,10 +270,27 @@ fn settings_upsert(st: &Settings) -> sqlx::query::Query<'static, MySql, MySqlArg
     .bind(st.delivery_note.clone())
 }
 
+/// Tambah kolom bila belum ada. MySQL 8 tidak punya ADD COLUMN IF NOT EXISTS.
+async fn add_column_if_missing(db: &MySqlPool, table: &str, column: &str, ddl: &str) -> Result<(), sqlx::Error> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(db)
+    .await?;
+    if n == 0 {
+        sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {ddl}")).execute(db).await?;
+    }
+    Ok(())
+}
+
 async fn migrate(db: &MySqlPool, data_file: &FsPath) -> Result<(), sqlx::Error> {
     for stmt in SCHEMA {
         sqlx::query(stmt).execute(db).await?;
     }
+    add_column_if_missing(db, "products", "cost", "cost BIGINT NULL").await?;
+    add_column_if_missing(db, "sale_items", "cost", "cost BIGINT NULL").await?;
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM products").fetch_one(db).await?;
     if count > 0 {
         return Ok(());
@@ -281,7 +307,7 @@ async fn migrate(db: &MySqlPool, data_file: &FsPath) -> Result<(), sqlx::Error> 
 
     let mut tx = db.begin().await?;
     for p in &legacy.products {
-        sqlx::query("INSERT INTO products (id, name, category, price, unit, emoji, tag, barcode, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO products (id, name, category, price, unit, emoji, tag, barcode, stock, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(p.id as i64)
             .bind(p.name.clone())
             .bind(p.category.clone())
@@ -291,6 +317,7 @@ async fn migrate(db: &MySqlPool, data_file: &FsPath) -> Result<(), sqlx::Error> 
             .bind(p.tag.clone())
             .bind(p.barcode.clone())
             .bind(p.stock.map(|v| v as i64))
+            .bind(p.cost.map(|v| v as i64))
             .execute(&mut *tx)
             .await?;
     }
@@ -439,6 +466,7 @@ fn product_row(r: &MySqlRow) -> Result<Product, sqlx::Error> {
         tag: r.try_get("tag")?,
         barcode: r.try_get("barcode")?,
         stock: r.try_get::<Option<i64>, _>("stock")?.map(|v| v as u32),
+        cost: r.try_get::<Option<i64>, _>("cost")?.map(|v| v as u32),
     })
 }
 
@@ -597,6 +625,7 @@ struct ProductIn {
     tag: Option<String>,
     barcode: Option<String>,
     stock: Option<u32>,
+    cost: Option<u32>,
 }
 
 impl ProductIn {
@@ -614,6 +643,10 @@ impl ProductIn {
             emoji: clean(&self.emoji, 16).ok_or_else(bad)?,
             tag: self.tag.as_deref().and_then(|t| clean(t, 20)),
             barcode: self.barcode.as_deref().and_then(|b| clean(b, 40)),
+            cost: match self.cost {
+                Some(c) if c > 100_000_000 => return Err(bad()),
+                other => other,
+            },
             stock: match self.stock {
                 Some(n) if n > 1_000_000 => return Err(bad()),
                 other => other,
@@ -627,7 +660,7 @@ const DUP_BARCODE: &str = "Barcode ini sudah dipakai produk lain.";
 async fn product_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<ProductIn>) -> ApiResult<Product> {
     require_admin(&s, &headers).await?;
     let p = b.into_product(0)?;
-    let res = sqlx::query("INSERT INTO products (name, category, price, unit, emoji, tag, barcode, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    let res = sqlx::query("INSERT INTO products (name, category, price, unit, emoji, tag, barcode, stock, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(p.name.clone())
         .bind(p.category.clone())
         .bind(p.price as i64)
@@ -636,6 +669,7 @@ async fn product_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Js
         .bind(p.tag.clone())
         .bind(p.barcode.clone())
         .bind(p.stock.map(|v| v as i64))
+        .bind(p.cost.map(|v| v as i64))
         .execute(&s.db)
         .await
         .map_err(|e| if is_dup(&e) { fail(StatusCode::CONFLICT, DUP_BARCODE) } else { db_err(e) })?;
@@ -653,7 +687,7 @@ async fn product_update(State(s): State<Shared>, headers: HeaderMap, Path(id): P
     if exists.is_none() {
         return Err(fail(StatusCode::NOT_FOUND, "Produk tidak ditemukan."));
     }
-    sqlx::query("UPDATE products SET name = ?, category = ?, price = ?, unit = ?, emoji = ?, tag = ?, barcode = ?, stock = ? WHERE id = ?")
+    sqlx::query("UPDATE products SET name = ?, category = ?, price = ?, unit = ?, emoji = ?, tag = ?, barcode = ?, stock = ?, cost = ? WHERE id = ?")
         .bind(p.name.clone())
         .bind(p.category.clone())
         .bind(p.price as i64)
@@ -662,6 +696,7 @@ async fn product_update(State(s): State<Shared>, headers: HeaderMap, Path(id): P
         .bind(p.tag.clone())
         .bind(p.barcode.clone())
         .bind(p.stock.map(|v| v as i64))
+        .bind(p.cost.map(|v| v as i64))
         .bind(id as i64)
         .execute(&s.db)
         .await
@@ -874,7 +909,7 @@ async fn sale_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<
             }
         }
         total += p.price as u64 * *qty as u64;
-        items.push(SaleItem { product_id: p.id, name: p.name.clone(), price: p.price, qty: *qty });
+        items.push(SaleItem { product_id: p.id, name: p.name.clone(), price: p.price, qty: *qty, cost: p.cost });
     }
     if total > 1_000_000_000 {
         return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Total transaksi terlalu besar."));
@@ -894,12 +929,13 @@ async fn sale_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<
         .map_err(db_err)?;
     let sale_id = res.last_insert_id();
     for it in &items {
-        sqlx::query("INSERT INTO sale_items (sale_id, product_id, name, price, qty) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO sale_items (sale_id, product_id, name, price, qty, cost) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(sale_id as i64)
             .bind(it.product_id as i64)
             .bind(it.name.clone())
             .bind(it.price as i64)
             .bind(it.qty as i64)
+            .bind(it.cost.map(|v| v as i64))
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -946,12 +982,167 @@ async fn sales_list(State(s): State<Shared>, headers: HeaderMap) -> ApiResult<Ve
             name: r.try_get("name").map_err(db_err)?,
             price: r.try_get::<i64, _>("price").map_err(db_err)? as u32,
             qty: r.try_get::<i64, _>("qty").map_err(db_err)? as u32,
+            cost: None,
         };
         if let Some(last) = out.last_mut() {
             last.items.push(item);
         }
     }
     Ok(Json(out))
+}
+
+// ---------- Analisa penjualan ----------
+
+/// Selisih waktu WIB (UTC+7) dalam detik. Hari dihitung menurut jam Indonesia.
+const WIB: i64 = 7 * 3600;
+
+/// Hari sejak 1970-01-01 untuk tanggal kalender (algoritma Howard Hinnant).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// "YYYY-MM-DD" menjadi jumlah hari sejak 1970-01-01.
+fn parse_day(s: &str) -> Option<i64> {
+    let mut it = s.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d))
+}
+
+#[derive(Deserialize)]
+struct RangeQuery {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+struct DayStat {
+    /// Awal hari dalam detik sejak epoch (pukul 00.00 WIB)
+    day: i64,
+    transactions: u64,
+    revenue: i64,
+    /// Omzet dari barang yang harga belinya sudah diisi
+    revenue_known: i64,
+    cost: i64,
+    profit: i64,
+}
+
+#[derive(Serialize, Default)]
+struct ProductStat {
+    product_id: u32,
+    name: String,
+    qty: i64,
+    revenue: i64,
+    revenue_known: i64,
+    cost: i64,
+    profit: i64,
+    /// Baris penjualan yang harga belinya belum diisi saat dijual
+    missing_cost_lines: u64,
+}
+
+#[derive(Serialize, Default)]
+struct Analytics {
+    transactions: u64,
+    qty: i64,
+    revenue: i64,
+    revenue_known: i64,
+    cost: i64,
+    profit: i64,
+    /// Margin dihitung dari barang yang harga belinya sudah diisi
+    margin: f64,
+    missing_cost_lines: u64,
+    days: Vec<DayStat>,
+    products: Vec<ProductStat>,
+}
+
+async fn analytics(State(s): State<Shared>, headers: HeaderMap, Query(q): Query<RangeQuery>) -> ApiResult<Analytics> {
+    require_admin(&s, &headers).await?;
+    let today = (now() as i64 + WIB) / 86_400;
+    let to_day = q.to.as_deref().and_then(parse_day).unwrap_or(today);
+    let from_day = q.from.as_deref().and_then(parse_day).unwrap_or(to_day - 29);
+    if from_day > to_day || to_day - from_day > 366 {
+        return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Rentang tanggal harus 1 sampai 366 hari."));
+    }
+    let start = from_day * 86_400 - WIB;
+    let end = (to_day + 1) * 86_400 - WIB;
+
+    let rows = sqlx::query(
+        "SELECT s.id AS sid, s.created_at, i.product_id, i.name, i.price, i.qty, i.cost
+         FROM sales s JOIN sale_items i ON i.sale_id = s.id
+         WHERE s.created_at >= ? AND s.created_at < ?",
+    )
+    .bind(start)
+    .bind(end)
+    .fetch_all(&s.db)
+    .await
+    .map_err(db_err)?;
+
+    let mut a = Analytics::default();
+    let mut days: BTreeMap<i64, DayStat> = BTreeMap::new();
+    let mut products: BTreeMap<i64, ProductStat> = BTreeMap::new();
+    let mut counted: HashSet<i64> = HashSet::new();
+    for r in &rows {
+        let sid: i64 = r.try_get("sid").map_err(db_err)?;
+        let created: i64 = r.try_get("created_at").map_err(db_err)?;
+        let pid: i64 = r.try_get("product_id").map_err(db_err)?;
+        let name: String = r.try_get("name").map_err(db_err)?;
+        let price: i64 = r.try_get("price").map_err(db_err)?;
+        let qty: i64 = r.try_get("qty").map_err(db_err)?;
+        let cost: Option<i64> = r.try_get("cost").map_err(db_err)?;
+        let line = price * qty;
+
+        let day_key = (created + WIB) / 86_400;
+        let d = days.entry(day_key).or_insert_with(|| DayStat { day: day_key * 86_400 - WIB, ..Default::default() });
+        if counted.insert(sid) {
+            d.transactions += 1;
+            a.transactions += 1;
+        }
+        let p = products
+            .entry(pid)
+            .or_insert_with(|| ProductStat { product_id: pid as u32, name: name.clone(), ..Default::default() });
+
+        a.qty += qty;
+        a.revenue += line;
+        d.revenue += line;
+        p.qty += qty;
+        p.revenue += line;
+        match cost {
+            Some(c) => {
+                let lc = c * qty;
+                a.revenue_known += line;
+                a.cost += lc;
+                d.revenue_known += line;
+                d.cost += lc;
+                p.revenue_known += line;
+                p.cost += lc;
+            }
+            None => {
+                a.missing_cost_lines += 1;
+                p.missing_cost_lines += 1;
+            }
+        }
+    }
+
+    for d in days.values_mut() {
+        d.profit = d.revenue_known - d.cost;
+    }
+    for p in products.values_mut() {
+        p.profit = p.revenue_known - p.cost;
+    }
+    a.profit = a.revenue_known - a.cost;
+    a.margin = if a.revenue_known > 0 { a.profit as f64 / a.revenue_known as f64 * 100.0 } else { 0.0 };
+    a.days = days.into_values().collect();
+    a.products = products.into_values().collect();
+    a.products.sort_by_key(|p| std::cmp::Reverse(p.profit));
+    Ok(Json(a))
 }
 
 // ---------- Main ----------
@@ -1003,7 +1194,8 @@ async fn main() {
         .route("/admin/subscribers/{id}", delete(subscriber_delete))
         .route("/admin/settings", put(settings_put))
         .route("/admin/barcode", get(barcode_lookup))
-        .route("/admin/sales", get(sales_list).post(sale_create));
+        .route("/admin/sales", get(sales_list).post(sale_create))
+        .route("/admin/analytics", get(analytics));
 
     let mut app = Router::new().nest("/api", api).with_state(state);
 

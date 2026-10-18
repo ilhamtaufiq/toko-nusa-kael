@@ -9,6 +9,8 @@ export type Product = {
   barcode?: string | null;
   /** null/undefined = stok tidak dilacak */
   stock?: number | null;
+  /** Harga beli per satuan; null = belum diisi */
+  cost?: number | null;
 };
 
 export type Promo = {

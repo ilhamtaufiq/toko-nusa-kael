@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+target/
+.env
+data.json
+data.json.tmp
+*.stackdump

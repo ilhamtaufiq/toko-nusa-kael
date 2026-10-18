@@ -1,0 +1,7 @@
+**/node_modules
+**/dist
+**/.astro
+api/target
+api/data.json
+.env
+.git

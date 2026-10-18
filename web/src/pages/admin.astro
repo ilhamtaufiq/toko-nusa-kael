@@ -1,0 +1,11 @@
+---
+import Base from '../layouts/Base.astro';
+import Admin from '../components/Admin';
+import '../styles/admin.css';
+---
+
+<Base title="Admin — Toko Nusa Kael" description="Panel pengelolaan Toko Nusa Kael" noindex>
+  <main class="wrap" style="padding-block: 28px 64px">
+    <Admin client:only="react" />
+  </main>
+</Base>

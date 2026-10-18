@@ -1,0 +1,140 @@
+---
+import Base from '../layouts/Base.astro';
+import Promos from '../components/Promos';
+import Catalog from '../components/Catalog';
+import Subscribe from '../components/Subscribe';
+import OpenChip from '../components/OpenChip';
+import Contact from '../components/Contact';
+import Brand from '../components/Brand';
+
+const shelf = ['BERAS', 'MINYAK', 'TELUR', 'KOPI', 'MI INSTAN', 'SABUN', 'TEH DINGIN', 'ROTI', 'GULA', 'AIR MINERAL', 'TISU', 'CAMILAN'];
+---
+
+<Base
+  title="Toko Nusa Kael — Belanja Lengkap, Harga Bersahabat"
+  description="Toko Nusa Kael: warung serba ada untuk sembako, makanan segar, minuman, camilan, dan kebutuhan rumah. Buka setiap hari, antar gratis dalam 2 km."
+>
+  <header class="site-header">
+    <div class="wrap nav">
+      <Brand client:load />
+      <nav class="nav-links" aria-label="Navigasi utama">
+        <a href="#promo">Promo</a>
+        <a href="#produk">Produk</a>
+        <a href="#kabar">Kabar Promo</a>
+      </nav>
+      <a class="btn" href="#produk">Mulai belanja</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <OpenChip client:load />
+          <h1>Semua kebutuhan rumah, <em>satu pintu</em> dekat Anda.</h1>
+          <p class="lead">
+            Dari beras dan telur sampai kopi dan sabun cuci. Toko Nusa Kael hadir dengan harga pas,
+            barang segar tiap pagi, dan pegawai yang hafal langganan.
+          </p>
+          <div class="hero-cta">
+            <a class="btn" href="#produk">Lihat produk</a>
+            <a class="btn ghost" href="#kabar">Kabar promo</a>
+          </div>
+          <div class="hero-stats">
+            <div><b>1</b><span>toko di Cianjur</span></div>
+            <div><b>2.000+</b><span>jenis barang</span></div>
+            <div><b>06–23</b><span>buka setiap hari</span></div>
+          </div>
+        </div>
+
+        <aside class="receipt" aria-label="Contoh struk belanja Nusa Kael">
+          <h3>NUSA KAEL</h3>
+          <p class="sub">Karangtengah, Cianjur</p>
+          <hr />
+          <div class="row"><span>2x Telur 1 kg</span><span>59.000</span></div>
+          <div class="row"><span>1x Beras 5 kg</span><span>74.500</span></div>
+          <div class="row"><span>1x Kopi Tubruk</span><span>22.000</span></div>
+          <div class="row"><span>3x Teh Botol</span><span>16.500</span></div>
+          <hr />
+          <div class="row"><span>Hemat paket</span><span>-6.100</span></div>
+          <div class="row total"><span>TOTAL</span><span>165.900</span></div>
+          <p class="thanks">Terima kasih, sehat selalu!</p>
+        </aside>
+      </div>
+    </section>
+
+    <div class="ticker" aria-hidden="true">
+      <div class="ticker-track">
+        {[...shelf, ...shelf].map((w) => <span>{w} ✦</span>)}
+      </div>
+    </div>
+
+    <section class="section">
+      <div class="wrap usp">
+        <div><span class="ico">🕕</span><h3>Buka pagi sampai malam</h3><p>Pukul 06.00–23.00 setiap hari.</p></div>
+        <div><span class="ico">🥬</span><h3>Segar tiap pagi</h3><p>Sayur, telur, dan tempe datang dari pemasok lokal.</p></div>
+        <div><span class="ico">🏷️</span><h3>Harga tertera jelas</h3><p>Label harga di setiap rak, tanpa tawar-menawar.</p></div>
+        <div><span class="ico">🛵</span><h3>Antar gratis 2 km</h3><p>Pesan lewat WhatsApp, kami antar ke rumah.</p></div>
+      </div>
+    </section>
+
+    <section class="section promo-band" id="promo">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Promo minggu ini</span>
+            <h2 class="section-title">Paket hemat, belanja jadi ringan.</h2>
+          </div>
+          <p>Harga paket berlaku selama persediaan ada.</p>
+        </div>
+        <Promos client:load />
+      </div>
+    </section>
+
+    <section class="section" id="produk">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Produk pilihan</span>
+            <h2 class="section-title">Susun daftar belanja, kirim ke toko.</h2>
+          </div>
+          <p>Harga sama seperti di rak. Pilih barang, lalu kirim daftar lewat WhatsApp untuk diantar atau diambil.</p>
+        </div>
+        <Catalog client:load />
+      </div>
+    </section>
+
+
+    <section class="section subscribe" id="kabar">
+      <div class="wrap sub-grid">
+        <div>
+          <h2>Promo duluan, langsung ke WhatsApp.</h2>
+          <p>Satu pesan per minggu berisi harga spesial dan barang baru. Berhenti kapan saja.</p>
+        </div>
+        <Subscribe client:load />
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-grid">
+      <div>
+        <Brand client:load />
+        <p style="margin-top:12px;max-width:34ch">Toko serba ada untuk kebutuhan harian keluarga Anda.</p>
+      </div>
+      <div>
+        <h4>Jelajah</h4>
+        <ul>
+          <li><a href="#promo">Promo</a></li>
+          <li><a href="#produk">Produk</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Hubungi</h4>
+        <Contact client:load />
+      </div>
+    </div>
+    <div class="wrap copy">© {new Date().getFullYear()} Toko Nusa Kael. Semua hak dilindungi.</div>
+  </footer>
+
+</Base>

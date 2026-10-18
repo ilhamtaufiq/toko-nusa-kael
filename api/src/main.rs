@@ -1523,6 +1523,11 @@ async fn gateway_call(gw: &Gateway, method: reqwest::Method, path: &str, body: O
     let status = res.status();
     let v: serde_json::Value = res.json().await.unwrap_or(serde_json::json!({}));
     if !status.is_success() {
+        // 401 dari gateway berarti rahasia tidak cocok. Jangan diteruskan sebagai 401,
+        // karena browser menganggap itu sesi admin habis dan langsung mengeluarkan admin.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(fail(StatusCode::BAD_GATEWAY, "Rahasia gateway tidak cocok. Periksa GATEWAY_SECRET di server."));
+        }
         let code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let msg = v["message"].as_str().unwrap_or("Gateway menolak permintaan.").to_string();
         return Err(fail(code, &msg));

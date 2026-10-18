@@ -317,8 +317,10 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const active = document.activeElement;
-      if (active && active !== document.body) return;
+      // Fokus bisa sedang di tombol (setelah menekan tile) atau di area kosong. Keduanya dialihkan ke kolom scan.
+      // Yang dibiarkan hanya saat mengetik di input lain (kolom scan sendiri, uang diterima, pencarian).
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (e.key === 'Enter') {
         const value = codeRef.current?.value ?? '';
         if (!value) return;

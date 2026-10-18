@@ -391,6 +391,7 @@ struct AppState {
     admin_password: Option<String>,
     sessions: Mutex<HashSet<String>>,
     midtrans: Option<Midtrans>,
+    gateway: Option<Gateway>,
 }
 
 type Shared = Arc<AppState>;
@@ -1487,6 +1488,75 @@ async fn midtrans_notify(State(s): State<Shared>, Json(n): Json<Notify>) -> Resu
     Ok(StatusCode::OK)
 }
 
+// ---------- Koneksi GoPay lewat gateway ----------
+
+/// Gateway QRIS (service Node terpisah). Hanya bisa dihubungi dari jaringan internal Docker.
+struct Gateway {
+    url: String,
+    secret: String,
+    http: reqwest::Client,
+}
+
+fn gateway_or_503(s: &AppState) -> Result<&Gateway, ApiError> {
+    s.gateway
+        .as_ref()
+        .ok_or_else(|| fail(StatusCode::SERVICE_UNAVAILABLE, "Gateway QRIS belum dikonfigurasi (GATEWAY_SECRET)."))
+}
+
+/// Meneruskan request ke gateway. Pesan error hanya diambil dari field `message` yang sudah aman.
+async fn gateway_call(gw: &Gateway, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, ApiError> {
+    let mut req = gw.http.request(method, format!("{}{}", gw.url, path)).header("x-gateway-secret", gw.secret.as_str());
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|_| fail(StatusCode::SERVICE_UNAVAILABLE, "Gateway QRIS tidak dapat dihubungi."))?;
+    let status = res.status();
+    let v: serde_json::Value = res.json().await.unwrap_or(serde_json::json!({}));
+    if !status.is_success() {
+        let code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let msg = v["message"].as_str().unwrap_or("Gateway menolak permintaan.").to_string();
+        return Err(fail(code, &msg));
+    }
+    Ok(v)
+}
+
+async fn gopay_status(State(s): State<Shared>, headers: HeaderMap) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let gw = gateway_or_503(&s)?;
+    Ok(Json(gateway_call(gw, reqwest::Method::GET, "/v1/login/status", None).await?))
+}
+
+#[derive(Deserialize)]
+struct GopayPhoneIn {
+    phone: String,
+}
+
+async fn gopay_request(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<GopayPhoneIn>) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let gw = gateway_or_503(&s)?;
+    Ok(Json(gateway_call(gw, reqwest::Method::POST, "/v1/login/request", Some(serde_json::json!({ "phone": b.phone }))).await?))
+}
+
+#[derive(Deserialize)]
+struct GopayOtpIn {
+    otp: String,
+}
+
+async fn gopay_verify(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<GopayOtpIn>) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let gw = gateway_or_503(&s)?;
+    Ok(Json(gateway_call(gw, reqwest::Method::POST, "/v1/login/verify", Some(serde_json::json!({ "otp": b.otp }))).await?))
+}
+
+async fn gopay_logout(State(s): State<Shared>, headers: HeaderMap) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let gw = gateway_or_503(&s)?;
+    Ok(Json(gateway_call(gw, reqwest::Method::POST, "/v1/logout", None).await?))
+}
+
 // ---------- Main ----------
 
 #[tokio::main]
@@ -1523,12 +1593,22 @@ async fn main() {
     if midtrans.is_none() {
         eprintln!("INFO: MIDTRANS_SERVER_KEY kosong. Pembayaran QRIS dinonaktifkan.");
     }
+    // Gateway GoPay (service terpisah). Aktif hanya jika GATEWAY_SECRET diisi, minimal 32 karakter.
+    let gateway = std::env::var("GATEWAY_SECRET")
+        .ok()
+        .filter(|s| s.len() >= 32)
+        .map(|secret| Gateway {
+            url: std::env::var("GATEWAY_URL").unwrap_or_else(|_| "http://gateway:3100".into()),
+            secret,
+            http: reqwest::Client::builder().timeout(Duration::from_secs(30)).build().expect("HTTP client gagal dibuat"),
+        });
 
     let state: Shared = Arc::new(AppState {
         db,
         admin_password,
         sessions: Mutex::new(HashSet::new()),
         midtrans,
+        gateway,
     });
 
     let api = Router::new()
@@ -1555,7 +1635,11 @@ async fn main() {
         .route("/admin/qris", post(qris_create))
         .route("/admin/qris/{order_id}", get(qris_status))
         .route("/qris/{order_id}/qr", get(qris_qr))
-        .route("/midtrans/notify", post(midtrans_notify));
+        .route("/midtrans/notify", post(midtrans_notify))
+        .route("/admin/gopay", get(gopay_status))
+        .route("/admin/gopay/request", post(gopay_request))
+        .route("/admin/gopay/verify", post(gopay_verify))
+        .route("/admin/gopay/logout", post(gopay_logout));
 
     let mut app = Router::new().nest("/api", api).with_state(state);
 

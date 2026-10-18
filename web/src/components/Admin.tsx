@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { rupiah, type Product, type Promo, type Settings } from '../lib/api';
 import Scanner from './Scanner';
 import Analytics from './Analytics';
+import GopayLogin from './GopayLogin';
 
 type Subscriber = { id: number; name: string; whatsapp: string; created_at: number };
 type Tab = 'produk' | 'analisa' | 'promo' | 'pelanggan' | 'pengaturan';
@@ -141,7 +142,12 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
       {tab === 'analisa' && <Analytics call={call} />}
       {tab === 'promo' && <Promos call={call} />}
       {tab === 'pelanggan' && <Subscribers call={call} />}
-      {tab === 'pengaturan' && <ShopSettings call={call} />}
+      {tab === 'pengaturan' && (
+        <>
+          <ShopSettings call={call} />
+          <GopayLogin call={call} />
+        </>
+      )}
     </div>
   );
 }

@@ -295,6 +295,31 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     [call, addProduct, products, focusScan, beep],
   );
 
+  // Kalau tidak ada elemen yang sedang fokus, ketikan dari scanner tetap ditangkap:
+  // karakter dialihkan ke kolom scan, dan Enter memproses kode yang terkumpul.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      if (e.key === 'Enter') {
+        const value = codeRef.current?.value ?? '';
+        if (!value) return;
+        e.preventDefault();
+        setCode('');
+        addByCode(value);
+        return;
+      }
+      if (e.key.length === 1) {
+        e.preventDefault();
+        setCode((c) => c + e.key);
+        focusScan();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focusScan, addByCode]);
+
   function onCodeSubmit(e: FormEvent) {
     e.preventDefault();
     const value = code;

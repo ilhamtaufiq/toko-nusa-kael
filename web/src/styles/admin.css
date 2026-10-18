@@ -12,6 +12,14 @@
 }
 .spacer { flex: 1; }
 
+/* ===== Koneksi GoPay ===== */
+.gopay-card { max-width: 640px; margin-top: 20px; border: 2px solid var(--green); display: grid; gap: 12px; }
+.gopay-card h2 { font-size: 1.1rem; color: var(--green); }
+.gopay-status { margin: 0; font-weight: 700; }
+.gopay-status.on { color: var(--leaf); }
+.gopay-status.off { color: var(--muted); }
+.gopay-form { display: grid; gap: 10px; }
+
 /* ===== Analisa penjualan ===== */
 .an { display: grid; gap: 18px; }
 .an-toolbar { display: flex; justify-content: space-between; align-items: end; gap: 14px; flex-wrap: wrap; }

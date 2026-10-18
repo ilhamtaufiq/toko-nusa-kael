@@ -1,0 +1,16 @@
+{
+  "name": "nusa-kael-qris-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gateway QRIS dinamis (GoPay Merchant) untuk Nusa Kael. Hanya dipanggil oleh backend lewat jaringan internal.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "login": "node login.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

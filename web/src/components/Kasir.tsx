@@ -147,7 +147,72 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   const [success, setSuccess] = useState<Sale | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
 
-  const focusScan = useCallback(() => codeRef.current?.focus(), []);
+  // Bunyi scan: nada naik untuk berhasil, nada turun untuk gagal. Dibuat di browser, tanpa file audio.
+  const [sound, setSound] = useState(() => {
+    try {
+      return localStorage.getItem('k_sound') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const audioRef = useRef<AudioContext | null>(null);
+  useEffect(() => {
+    // Browser hanya mengizinkan suara setelah ada interaksi pengguna
+    const unlock = () => {
+      if (!audioRef.current) {
+        try {
+          audioRef.current = new AudioContext();
+        } catch {
+          return;
+        }
+      }
+      audioRef.current.resume().catch(() => {});
+    };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+  const toggleSound = () => {
+    setSound((v) => {
+      try {
+        localStorage.setItem('k_sound', v ? 'off' : 'on');
+      } catch {
+        /* penyimpanan diblokir: pilihan hanya berlaku sampai halaman ditutup */
+      }
+      return !v;
+    });
+  };
+  const beep = useCallback(
+    (ok: boolean) => {
+      const ctx = audioRef.current;
+      if (!sound || !ctx) return;
+      const now = ctx.currentTime;
+      const tones: [number, number][] = ok ? [[880, 0], [1320, 0.09]] : [[220, 0], [160, 0.16]];
+      for (const [freq, at] of tones) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = ok ? 'sine' : 'square';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, now + at);
+        gain.gain.exponentialRampToValueAtTime(0.2, now + at + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + at + (ok ? 0.08 : 0.14));
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now + at);
+        osc.stop(now + at + 0.16);
+      }
+    },
+    [sound],
+  );
+
+  // Di layar sentuh, fokus otomatis akan memunculkan keyboard di layar: lewati.
+  // Scanner USB/Bluetooth tetap bekerja karena mengirim input seperti keyboard fisik.
+  const [touch] = useState(() => !window.matchMedia('(pointer: fine)').matches);
+  const focusScan = useCallback(() => {
+    if (!touch) codeRef.current?.focus();
+  }, [touch]);
 
   const loadSales = useCallback(() => call<Sale[]>('/api/admin/sales').then(setSales).catch(() => {}), [call]);
   const loadProducts = useCallback(() => getJson<Product[]>('/api/products', []).then(setProducts), []);
@@ -193,19 +258,22 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
       const local = products.find((p) => p.barcode === value);
       if (local) {
         addProduct(local);
+        beep(true);
         focusScan();
         return;
       }
       try {
         const p = await call<Product>(`/api/admin/barcode?code=${encodeURIComponent(value)}`);
         addProduct(p);
+        beep(true);
       } catch {
         setFeedback({ ok: false, text: `Barcode ${value} tidak dikenal` });
+        beep(false);
       } finally {
         focusScan();
       }
     },
-    [call, addProduct, products, focusScan],
+    [call, addProduct, products, focusScan, beep],
   );
 
   function onCodeSubmit(e: FormEvent) {
@@ -291,6 +359,9 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
         </div>
         <nav className="k-nav">
           <a href="/admin/">Admin</a>
+          <button type="button" onClick={toggleSound} aria-pressed={sound}>
+            {sound ? 'Suara: nyala' : 'Suara: mati'}
+          </button>
           <button type="button" onClick={onExpire}>Keluar</button>
         </nav>
       </header>
@@ -306,6 +377,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
               placeholder="Scan barcode atau QR, lalu Enter"
               aria-label="Kode barcode"
               autoComplete="off"
+              inputMode={touch ? 'none' : 'text'}
             />
             <button type="button" className={`k-cam${camOn ? ' on' : ''}`} onClick={() => setCamOn((v) => !v)}>
               {camOn ? 'Tutup kamera' : 'Kamera'}

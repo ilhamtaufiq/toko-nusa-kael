@@ -149,6 +149,8 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('Semua');
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // Diagnosis: setiap tombol yang diterima halaman (untuk melihat apakah scanner mengirim tombol dan ke mana)
+  const [diag, setDiag] = useState({ count: 0, last: '-', focus: '-' });
   const [camOn, setCamOn] = useState(false);
   const [sales, setSales] = useState<Sale[]>([]);
   const [busy, setBusy] = useState(false);
@@ -313,6 +315,18 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     },
     [call, addProduct, products, focusScan, beep],
   );
+
+  // Pencatat diagnosis: menangkap setiap tombol sebelum komponen lain memprosesnya
+  useEffect(() => {
+    const onDiag = (e: KeyboardEvent) => {
+      const a = document.activeElement as HTMLElement | null;
+      const focus = a ? `${a.tagName.toLowerCase()}${a.className ? '.' + String(a.className).split(' ')[0] : ''}` : '-';
+      const last = `key="${e.key}" code="${e.code}" keyCode=${e.keyCode}`;
+      setDiag((d) => ({ count: d.count + 1, last, focus }));
+    };
+    window.addEventListener('keydown', onDiag, true);
+    return () => window.removeEventListener('keydown', onDiag, true);
+  }, []);
 
   // Scanner dibaca langsung dari tombol yang ditekan, tanpa bergantung pada kolom menerima teks.
   // Kode dikumpulkan di bufRef (bukan state) supaya tidak ada karakter
@@ -514,6 +528,9 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
 
           <div className={`k-feedback ${feedback ? (feedback.ok ? 'ok' : 'err') : 'idle'}`} role="status" aria-live="polite">
             {feedback ? feedback.text : 'Siap scan. Scanner USB langsung bisa dipakai.'}
+          </div>
+          <div className="k-diag" style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+            Diagnosis: {diag.count} tombol diterima · terakhir: {diag.last} · fokus: {diag.focus} · isi kolom: &quot;{code}&quot;
           </div>
 
           {camOn && (

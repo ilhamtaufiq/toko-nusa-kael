@@ -234,9 +234,6 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   );
 
   // Autofokus selalu aktif supaya scanner USB/Bluetooth langsung bisa dipakai.
-  // Di layar sentuh, keyboard virtual disembunyikan lewat inputMode="none" (kecuali mode ketik manual).
-  const [touch] = useState(() => !window.matchMedia('(pointer: fine)').matches);
-  const [manual, setManual] = useState(false);
   const focusScan = useCallback(() => codeRef.current?.focus(), []);
 
   const loadSales = useCallback(() => call<Sale[]>('/api/admin/sales').then(setSales).catch(() => {}), [call]);
@@ -318,8 +315,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   );
 
   // Scanner dibaca langsung dari tombol yang ditekan, tanpa bergantung pada kolom menerima teks.
-  // Di layar sentuh kolom memakai inputMode="none"; di sana teks dari scanner sering tidak masuk ke kolom,
-  // padahal tombolnya tetap terkirim. Kode dikumpulkan di bufRef (bukan state) supaya tidak ada karakter
+  // Kode dikumpulkan di bufRef (bukan state) supaya tidak ada karakter
   // yang hilang saat scanner mengetik cepat. Hanya input lain (uang diterima, pencarian) yang dibiarkan.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -500,7 +496,6 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
               placeholder="Scan barcode atau QR, lalu Enter"
               aria-label="Kode barcode"
               autoComplete="off"
-              inputMode={touch && !manual ? 'none' : 'text'}
               autoFocus
               onBlur={(e) => {
                 // Kalau fokus pindah ke input lain (misalnya uang diterima atau pencarian), biarkan.
@@ -512,19 +507,6 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
                 }, 50);
               }}
             />
-            {touch && (
-              <button
-                type="button"
-                className={`k-cam${manual ? ' on' : ''}`}
-                aria-pressed={manual}
-                onClick={() => {
-                  setManual((v) => !v);
-                  focusScan();
-                }}
-              >
-                {manual ? 'Scan saja' : 'Ketik'}
-              </button>
-            )}
             <button type="button" className={`k-cam${camOn ? ' on' : ''}`} onClick={() => setCamOn((v) => !v)}>
               {camOn ? 'Tutup kamera' : 'Kamera'}
             </button>

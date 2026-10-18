@@ -3,8 +3,9 @@ services:
     build: .
     container_name: nusa-kael
     restart: unless-stopped
-    ports:
-      - "${PORT:-8080}:8080"
+    # Tidak memakai port host: Coolify meneruskan domain ke port 8080 container
+    expose:
+      - "8080"
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Isi ADMIN_PASSWORD (min. 8 karakter) di file .env}
       DATABASE_URL: mysql://${DB_USER:-nusa}:${DB_PASSWORD:?Isi DB_PASSWORD di file .env}@db:3306/${DB_NAME:-nusa_kael}

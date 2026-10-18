@@ -4,7 +4,7 @@
 import http from 'node:http';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, chmod, rm } from 'node:fs/promises';
+import { readFile, writeFile, chmod, rm, readdir, access, constants as fsConstants } from 'node:fs/promises';
 import { join } from 'node:path';
 import { GopayProvider, staticToDynamicQris } from 'merchantid';
 import { FilePaymentStore } from './store.mjs';
@@ -25,8 +25,28 @@ const SESSION_PATH = join(DATA_DIR, 'gopay-session.json');
 const store = new FilePaymentStore(join(DATA_DIR, 'payments.json'));
 
 async function saveSession(session) {
-  await writeFile(SESSION_PATH, JSON.stringify(session), { mode: 0o600 });
-  await chmod(SESSION_PATH, 0o600);
+  try {
+    await writeFile(SESSION_PATH, JSON.stringify(session), { mode: 0o600 });
+    await chmod(SESSION_PATH, 0o600);
+    console.log(`[gateway] sesi disimpan di ${SESSION_PATH}`);
+  } catch (err) {
+    console.error(`[gateway] GAGAL menyimpan sesi di ${SESSION_PATH}: ${err?.code || err?.name}`);
+    throw err;
+  }
+}
+
+// Diagnosis penyimpanan, hanya nama file dan izin tulis. Isi file tidak pernah dicetak.
+async function describeStorage() {
+  let writable = 'tidak';
+  try {
+    await access(DATA_DIR, fsConstants.W_OK);
+    writable = 'ya';
+  } catch {}
+  let files = '(tidak bisa dibaca)';
+  try {
+    files = (await readdir(DATA_DIR)).join(', ') || '(kosong)';
+  } catch {}
+  return `DATA_DIR=${DATA_DIR}, bisa ditulis: ${writable}, isi: ${files}`;
 }
 
 async function loadSession() {
@@ -49,6 +69,7 @@ async function startProvider() {
   const session = await loadSession();
   if (!session) {
     logger.warn('Belum login. Login lewat halaman Pengaturan di admin.');
+    logger.warn(`File sesi tidak ditemukan di ${SESSION_PATH}. ${await describeStorage()}`);
     return;
   }
   provider = new GopayProvider({

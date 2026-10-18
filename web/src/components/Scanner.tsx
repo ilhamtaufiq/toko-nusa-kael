@@ -21,13 +21,35 @@ const ZX_FORMATS = [
   BarcodeFormat.CODE_128,
   BarcodeFormat.CODE_39,
 ];
-// Resolusi sedang sudah cukup untuk membaca barcode, dan jauh lebih cepat dari resolusi penuh
+// Resolusi setinggi yang didukung kamera: browser memilih yang terbesar yang tersedia
 const VIDEO: MediaTrackConstraints = {
   facingMode: { ideal: 'environment' },
-  width: { ideal: 960 },
-  height: { ideal: 720 },
+  width: { ideal: 4096 },
+  height: { ideal: 2160 },
 };
 const CAMERA_ERROR = 'Kamera tidak bisa dibuka. Izinkan akses kamera, atau pakai scanner USB.';
+
+/** Minta fokus terus-menerus bila perangkat mendukung. Yang tidak didukung dilewati tanpa error. */
+async function tuneFocus(stream: MediaStream): Promise<string> {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return 'kamera tidak ditemukan';
+  const caps = (track.getCapabilities?.() ?? {}) as {
+    focusMode?: string[];
+    width?: { max?: number };
+    height?: { max?: number };
+  };
+  // Naikkan ke resolusi maksimum yang dilaporkan kamera
+  if (caps.width?.max && caps.height?.max) {
+    await track.applyConstraints({ width: caps.width.max, height: caps.height.max }).catch(() => {});
+  }
+  let focus = 'tidak didukung';
+  if (caps.focusMode?.includes('continuous')) {
+    await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {});
+    focus = 'kontinu';
+  }
+  const s = track.getSettings?.();
+  return `fokus ${focus}, ${s?.width ?? '?'}x${s?.height ?? '?'}`;
+}
 
 /**
  * Pemindai kamera. Memakai BarcodeDetector bila browser mendukung (paling cepat),
@@ -35,6 +57,8 @@ const CAMERA_ERROR = 'Kamera tidak bisa dibuka. Izinkan akses kamera, atau pakai
  */
 export default function Scanner({ onDetect, onError, onClose }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Status fokus kamera, ditampilkan untuk diagnosis di perangkat
+  const [focusInfo, setFocusInfo] = useState('memeriksa…');
   // Callback disimpan di ref supaya kamera tidak dinyalakan ulang setiap render
   const cb = useRef({ onDetect, onError });
   cb.current = { onDetect, onError };
@@ -72,6 +96,9 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        // Minta fokus terus-menerus, supaya barcode tetap tajam saat kamera digerakkan.
+        // Tidak semua HP mendukungnya; yang tidak didukung dilewati.
+        setFocusInfo(await tuneFocus(stream));
         video.srcObject = stream;
         await video.play().catch(() => {});
         const detector = new Native({ formats: NATIVE_FORMATS });
@@ -90,18 +117,36 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
         };
       })();
     } else {
+      // Jalur cadangan (ZXing). Stream dibuka sendiri supaya pengaturan fokus yang sama juga berlaku.
       const hints = new Map<DecodeHintType, unknown>();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, ZX_FORMATS);
       const reader = new BrowserMultiFormatReader(hints);
-      reader
-        .decodeFromConstraints({ video: VIDEO }, video, (result) => {
-          if (result) emit(result.getText());
-        })
-        .then((controls) => {
-          if (alive) stop = () => controls.stop();
-          else controls.stop();
-        })
-        .catch(fail);
+      (async () => {
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: false });
+        } catch {
+          return fail();
+        }
+        if (!alive) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        setFocusInfo(await tuneFocus(stream));
+        try {
+          const controls = await reader.decodeFromStream(stream, video, (result) => {
+            if (result) emit(result.getText());
+          });
+          stop = () => {
+            controls.stop();
+            stream.getTracks().forEach((t) => t.stop());
+          };
+          if (!alive) stop();
+        } catch {
+          stream.getTracks().forEach((t) => t.stop());
+          fail();
+        }
+      })();
     }
 
     return () => {
@@ -114,7 +159,7 @@ export default function Scanner({ onDetect, onError, onClose }: Props) {
     <div className="scanner">
       <video ref={videoRef} className="scanner-video" muted playsInline />
       <div className="scanner-bar">
-        <span>Arahkan barcode atau QR ke kamera</span>
+        <span>Arahkan barcode atau QR ke kamera · Kamera: {focusInfo}</span>
         <button type="button" className="btn ghost" onClick={onClose}>
           Tutup kamera
         </button>

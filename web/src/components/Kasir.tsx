@@ -451,6 +451,15 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
               autoComplete="off"
               inputMode={touch && !manual ? 'none' : 'text'}
               autoFocus
+              onBlur={(e) => {
+                // Kalau fokus pindah ke input lain (misalnya uang diterima atau pencarian), biarkan.
+                // Kalau fokus hilang ke area kosong atau ke tombol, kembalikan ke kolom scan.
+                const next = e.relatedTarget as HTMLElement | null;
+                if (next && next.closest('input, textarea, select')) return;
+                window.setTimeout(() => {
+                  if (!document.querySelector('input:focus, textarea:focus, select:focus')) focusScan();
+                }, 50);
+              }}
             />
             {touch && (
               <button

@@ -82,6 +82,10 @@ function stopProvider() {
 async function requestLoginOtp(phone) {
   const candidate = new GopayProvider({ logger });
   const challenge = await candidate.requestOtp(phone);
+  // Tanpa otpToken, OTP tidak pernah dikirim GoPay. Jangan dianggap berhasil.
+  if (!challenge?.otpToken) {
+    throw Object.assign(new Error('GoPay tidak mengirim tantangan OTP untuk nomor ini.'), { code: 'OTP_NOT_SENT' });
+  }
   pendingLogin = { provider: candidate, phone, otpToken: challenge.otpToken, at: Date.now() };
 }
 
@@ -210,9 +214,15 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     // Kesalahan alur yang aman ditampilkan (misalnya OTP belum diminta)
     if (err?.code === 'OTP_EXPIRED') return send(res, 409, { message: err.message });
-    // Pesan error provider bisa berisi detail sensitif, jadi hanya kode umum yang dicatat
-    logger.error(`request gagal: ${err?.code || err?.name || 'error'}`);
-    return send(res, 502, { message: 'Gateway gagal memproses permintaan.' });
+    if (err?.code === 'OTP_NOT_SENT') {
+      logger.error('OTP tidak terkirim: GoPay tidak mengembalikan tantangan OTP');
+      return send(res, 502, { message: err.message });
+    }
+    // Pesan GoPay (misalnya "nomor tidak terdaftar") dipakai untuk admin, tanpa token, dan dipotong.
+    // Detail lengkapnya hanya dicatat di log server, supaya tidak ada data sensitif ke browser.
+    const detail = String(err?.message || '').replace(/[A-Za-z0-9_-]{32,}/g, '[disembunyikan]').slice(0, 200);
+    logger.error(`request gagal: ${err?.code || err?.name || 'error'} ${detail}`);
+    return send(res, 502, { message: detail ? `GoPay: ${detail}` : 'Gateway gagal memproses permintaan.' });
   }
 });
 

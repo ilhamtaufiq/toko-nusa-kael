@@ -2,11 +2,11 @@
 // Hanya menerima request dari backend lewat jaringan internal Docker. Port ini tidak dibuka ke publik.
 // Setiap request wajib membawa header x-gateway-secret yang sama dengan GATEWAY_SECRET.
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GopayProvider } from 'merchantid';
+import { GopayProvider, staticToDynamicQris } from 'merchantid';
 import { FilePaymentStore } from './store.mjs';
 
 const PORT = Number(process.env.PORT || 3100);
@@ -174,7 +174,28 @@ const server = http.createServer(async (req, res) => {
         return send(res, 422, { message: 'Nominal tidak valid.' });
       }
       const reference = typeof body.reference === 'string' ? body.reference.slice(0, 64) : undefined;
-      const payment = await payments.createPayment({ amount, reference, expiresInMs: EXPIRY_MS });
+      // Tanpa kode unik: pembeli membayar nominal pas. Aturannya satu pesanan per nominal yang masih menunggu.
+      const scope = provider.getPaymentScope();
+      const active = await store.listActive(scope);
+      if (active.some((p) => p.uniqueAmount === amount && p.expiresAt > Date.now())) {
+        return send(res, 409, { message: 'Masih ada pesanan QRIS dengan nominal sama. Tunggu 15 menit atau cek pembayarannya.' });
+      }
+      const staticQris = provider.staticQris || STATIC_QRIS;
+      if (!staticQris) return send(res, 503, { message: 'QRIS statis belum diatur di gateway.' });
+      const now = Date.now();
+      const payment = {
+        id: randomUUID(),
+        scope,
+        baseAmount: amount,
+        uniqueOffset: 0,
+        uniqueAmount: amount,
+        status: 'pending',
+        createdAt: now,
+        expiresAt: now + EXPIRY_MS,
+        reference,
+        qrString: staticToDynamicQris(staticQris, amount),
+      };
+      await store.create(payment);
       return send(res, 201, publicView(payment));
     }
 

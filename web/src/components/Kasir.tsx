@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import QRCode from 'qrcode';
 import { getJson, rupiah, type Product } from '../lib/api';
 import Scanner from './Scanner';
 
@@ -16,7 +17,7 @@ type Sale = {
   change: number;
 };
 type Feedback = { ok: boolean; text: string } | null;
-type QrisOrder = { order_id: string; total: number; expires_at: number; status: string };
+type QrisOrder = { order_id: string; total: number; expires_at: number; status: string; qr_string: string };
 type Method = 'cash' | 'qris';
 
 const readToken = () => {
@@ -149,6 +150,22 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   const [success, setSuccess] = useState<Sale | null>(null);
   const [method, setMethod] = useState<Method>('cash');
   const [qris, setQris] = useState<QrisOrder | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
+
+  // Gambar QR dibuat di browser dari data QR yang dikirim gateway
+  useEffect(() => {
+    if (!qris?.qr_string) {
+      setQrImage(null);
+      return;
+    }
+    let alive = true;
+    QRCode.toDataURL(qris.qr_string, { width: 260, margin: 1 })
+      .then((url) => alive && setQrImage(url))
+      .catch(() => alive && setQrImage(null));
+    return () => {
+      alive = false;
+    };
+  }, [qris?.qr_string]);
   const codeRef = useRef<HTMLInputElement>(null);
 
   // Bunyi scan: nada naik untuk berhasil, nada turun untuk gagal. Dibuat di browser, tanpa file audio.
@@ -346,6 +363,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     setBusy(true);
     try {
       const r = await call<Omit<QrisOrder, 'status'>>('/api/admin/qris', {
+        // Nominal pas, tanpa kode unik
         method: 'POST',
         body: JSON.stringify({ items: cart.map((l) => ({ product_id: l.product.id, qty: l.qty })) }),
       });
@@ -676,7 +694,11 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
         <div className="k-modal" role="dialog" aria-modal="true" aria-label="Pembayaran QRIS">
           <div className="k-card">
             <p>Scan untuk bayar</p>
-            <img className="k-qr" src={`/api/qris/${qris.order_id}/qr`} alt="Kode QRIS" width={260} height={260} />
+            {qrImage ? (
+              <img className="k-qr" src={qrImage} alt="Kode QRIS" width={260} height={260} />
+            ) : (
+              <p className="k-empty">Membuat kode QR…</p>
+            )}
             <strong className="k-big">{rupiah(qris.total)}</strong>
             <small>
               {qris.status === 'pending' && 'Menunggu pembayaran…'}

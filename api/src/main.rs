@@ -1327,6 +1327,8 @@ struct QrisOut {
     order_id: String,
     total: i64,
     expires_at: u64,
+    /// Data QR dinamis; ditampilkan sebagai gambar di browser
+    qr_string: String,
 }
 
 fn midtrans_or_503(s: &AppState) -> Result<&Midtrans, ApiError> {
@@ -1337,7 +1339,7 @@ fn midtrans_or_503(s: &AppState) -> Result<&Midtrans, ApiError> {
 
 async fn qris_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<QrisIn>) -> ApiResult<QrisOut> {
     require_admin(&s, &headers).await?;
-    let mt = midtrans_or_503(&s)?;
+    let gw = gateway_or_503(&s)?;
     if b.items.is_empty() || b.items.len() > 100 {
         return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Keranjang kosong atau terlalu banyak barang."));
     }
@@ -1372,52 +1374,50 @@ async fn qris_create(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<
         return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, "Total transaksi tidak valid."));
     }
 
-    let order_id = new_order_id();
-    let body = serde_json::json!({
-        "payment_type": "qris",
-        "transaction_details": { "order_id": order_id, "gross_amount": total }
-    });
-    let res = mt
-        .http
-        .post(format!("{}/v2/charge", mt.base))
-        .basic_auth(&mt.key, Some(""))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Midtrans tidak dapat dihubungi."))?;
-    let v: serde_json::Value = res
-        .json()
-        .await
-        .map_err(|_| fail(StatusCode::BAD_GATEWAY, "Respons Midtrans tidak valid."))?;
-    if v["status_code"].as_str() != Some("201") {
-        let msg = v["status_message"].as_str().unwrap_or("Midtrans menolak permintaan.");
-        return Err(fail(StatusCode::BAD_GATEWAY, &format!("Midtrans: {msg}")));
-    }
-    let qr_url = v["actions"]
-        .as_array()
-        .and_then(|acts| {
-            acts.iter()
-                .find(|a| a["name"] == "generate-qr-code-v2")
-                .or_else(|| acts.iter().find(|a| a["name"] == "generate-qr-code"))
-        })
-        .and_then(|a| a["url"].as_str())
-        .map(str::to_string)
-        .ok_or_else(|| fail(StatusCode::BAD_GATEWAY, "QR tidak ada di respons Midtrans."))?;
+    // Pembayaran dibuat di gateway: nominal pas, QR dinamis dari QRIS statis, berlaku 15 menit
+    let created = gateway_call(
+        gw,
+        reqwest::Method::POST,
+        "/v1/payments",
+        Some(serde_json::json!({ "amount": total, "reference": new_order_id() })),
+    )
+    .await?;
+    let order_id = created["id"]
+        .as_str()
+        .ok_or_else(|| fail(StatusCode::BAD_GATEWAY, "Respons gateway tidak valid."))?
+        .to_string();
+    let qr_string = created["qrString"]
+        .as_str()
+        .ok_or_else(|| fail(StatusCode::BAD_GATEWAY, "QR tidak ada di respons gateway."))?
+        .to_string();
+    // expiresAt dari gateway dalam milidetik
+    let expires_at = created["expiresAt"].as_u64().unwrap_or(0) / 1000;
 
-    // QR QRIS dari Midtrans kedaluwarsa dalam 15 menit
-    let expires_at = now() + 900;
     sqlx::query("INSERT INTO qris_orders (order_id, status, total, items_json, qr_url, expires_at, created_at) VALUES (?, 'pending', ?, ?, ?, ?, ?)")
         .bind(order_id.clone())
         .bind(total)
         .bind(serde_json::to_string(&lines).unwrap_or_default())
-        .bind(qr_url)
+        .bind(qr_string.clone())
         .bind(expires_at as i64)
         .bind(now() as i64)
         .execute(&s.db)
         .await
         .map_err(db_err)?;
 
-    Ok(Json(QrisOut { order_id, total, expires_at }))
+    Ok(Json(QrisOut { order_id, total, expires_at, qr_string }))
+}
+
+/// Status pembayaran dari gateway, diterjemahkan ke istilah yang sudah dipakai apply_status.
+/// Nominal dari gateway selalu sama dengan total pesanan (tanpa kode unik).
+async fn gateway_payment_status(gw: &Gateway, id: &str, total: i64) -> Result<(String, String), ApiError> {
+    let v = gateway_call(gw, reqwest::Method::GET, &format!("/v1/payments/{id}"), None).await?;
+    let mapped = match v["status"].as_str().unwrap_or("") {
+        "paid" => "settlement",
+        "expired" => "expire",
+        "cancelled" => "cancel",
+        _ => "pending",
+    };
+    Ok((mapped.to_string(), total.to_string()))
 }
 
 async fn qris_status(State(s): State<Shared>, headers: HeaderMap, Path(order_id): Path<String>) -> ApiResult<serde_json::Value> {
@@ -1431,8 +1431,15 @@ async fn qris_status(State(s): State<Shared>, headers: HeaderMap, Path(order_id)
         .try_get("status")
         .map_err(db_err)?;
     let status = if local == "pending" {
-        let mt = midtrans_or_503(&s)?;
-        let (ms, gross) = midtrans_status(mt, &order_id).await?;
+        let gw = gateway_or_503(&s)?;
+        let total: i64 = sqlx::query("SELECT total FROM qris_orders WHERE order_id = ?")
+            .bind(order_id.clone())
+            .fetch_one(&s.db)
+            .await
+            .map_err(db_err)?
+            .try_get("total")
+            .map_err(db_err)?;
+        let (ms, gross) = gateway_payment_status(gw, &order_id, total).await?;
         apply_status(&s, &order_id, &ms, &gross).await?
     } else {
         local

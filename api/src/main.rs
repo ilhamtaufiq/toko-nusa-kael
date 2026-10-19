@@ -1200,6 +1200,21 @@ async fn gopay_status(State(s): State<Shared>, headers: HeaderMap) -> ApiResult<
     Ok(Json(gateway_call(gw, reqwest::Method::GET, "/v1/login/status", None).await?))
 }
 
+#[derive(Deserialize)]
+struct GopayCredIn {
+    email: String,
+    password: String,
+}
+
+/// Login GoBiz dengan email dan kata sandi dari halaman Pengaturan. Kata sandi hanya diteruskan ke gateway, tidak dicatat.
+async fn gopay_login(State(s): State<Shared>, headers: HeaderMap, Json(b): Json<GopayCredIn>) -> ApiResult<serde_json::Value> {
+    require_admin(&s, &headers).await?;
+    let gw = gateway_or_503(&s)?;
+    Ok(Json(
+        gateway_call(gw, reqwest::Method::POST, "/v1/login/password", Some(serde_json::json!({ "email": b.email, "password": b.password }))).await?,
+    ))
+}
+
 /// Login ulang dengan GOPAY_EMAIL dan GOPAY_PASSWORD yang ada di gateway. Tidak ada OTP.
 async fn gopay_refresh(State(s): State<Shared>, headers: HeaderMap) -> ApiResult<serde_json::Value> {
     require_admin(&s, &headers).await?;
@@ -1277,6 +1292,7 @@ async fn main() {
         .route("/admin/analytics", get(analytics))
         .route("/admin/transactions", get(transactions_live))
         .route("/admin/gopay", get(gopay_status))
+        .route("/admin/gopay/login", post(gopay_login))
         .route("/admin/gopay/refresh", post(gopay_refresh))
         .route("/admin/gopay/logout", post(gopay_logout));
 

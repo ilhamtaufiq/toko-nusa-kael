@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
 type Call = <T = unknown>(path: string, init?: RequestInit) => Promise<T>;
-type GopayStatus = { loggedIn: boolean; configured: boolean };
+type GopayStatus = { loggedIn: boolean };
 type Msg = { ok: boolean; text: string } | null;
 
-/** Koneksi GoBiz untuk memantau QRIS. Login memakai email dan kata sandi yang diisi di server (GOPAY_EMAIL, GOPAY_PASSWORD). */
+/** Koneksi GoBiz untuk memantau QRIS. Login dengan email dan kata sandi login GoFood Merchant. */
 export default function GopayLogin({ call }: { call: Call }) {
   const [status, setStatus] = useState<GopayStatus | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [msg, setMsg] = useState<Msg>(null);
   const [busy, setBusy] = useState(false);
 
@@ -20,14 +22,17 @@ export default function GopayLogin({ call }: { call: Call }) {
     load();
   }, [load]);
 
-  async function reconnect() {
+  async function login(e: FormEvent) {
+    e.preventDefault();
     setBusy(true);
     setMsg(null);
     try {
-      await call('/api/admin/gopay/refresh', { method: 'POST' });
-      setMsg({ ok: true, text: 'Koneksi GoBiz berhasil diperbarui.' });
+      await call('/api/admin/gopay/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+      setPassword('');
+      setMsg({ ok: true, text: 'Terhubung ke GoBiz.' });
       load();
     } catch (x) {
+      setPassword('');
       setMsg({ ok: false, text: (x as Error).message });
     } finally {
       setBusy(false);
@@ -56,15 +61,35 @@ export default function GopayLogin({ call }: { call: Call }) {
           ? 'Memuat status…'
           : status.loggedIn
             ? 'Terhubung. Transaksi QRIS bisa dipantau.'
-            : status.configured
-              ? 'Belum terhubung. Tekan "Login ulang" untuk mencoba.'
-              : 'Belum dikonfigurasi. Isi GOPAY_EMAIL dan GOPAY_PASSWORD di server.'}
+            : 'Belum terhubung. Masukkan email dan kata sandi login GoFood Merchant.'}
       </p>
 
-      {status?.configured && (
-        <button className="btn" type="button" onClick={reconnect} disabled={busy}>
-          {busy ? 'Memproses…' : 'Login ulang'}
-        </button>
+      {status && !status.loggedIn && (
+        <form onSubmit={login} className="gopay-form">
+          <label>
+            Email GoBiz
+            <input
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </label>
+          <label>
+            Kata sandi login
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+          <button className="btn" type="submit" disabled={busy}>
+            {busy ? 'Memproses…' : 'Login'}
+          </button>
+        </form>
       )}
 
       {status?.loggedIn && (

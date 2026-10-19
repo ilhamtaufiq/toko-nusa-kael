@@ -3,7 +3,7 @@ import { rupiah } from '../lib/api';
 
 type Call = <T = unknown>(path: string, init?: RequestInit) => Promise<T>;
 type Incoming = { id: string; time: string | null; amount: number; status: string; paymentType: string };
-type Feed = { fetchedAt: number; cacheSeconds: number; transactions: Incoming[] };
+type Feed = { lastPollAt: string | null; transactions: Incoming[] };
 
 // Halaman ini memakai cache gateway (30 detik). Tidak perlu lebih sering dari itu.
 const REFRESH_MS = 30_000;
@@ -50,7 +50,7 @@ export default function LiveTransactions({ call }: { call: Call }) {
       <div className="live-tx-bar">
         <span>
           {feed
-            ? `${feed.transactions.length} transaksi · total ${rupiah(total)} · diperbarui ${formatTime(new Date(feed.fetchedAt).toISOString())}`
+            ? `${feed.transactions.length} transaksi · total ${rupiah(total)} · diperiksa ${feed.lastPollAt ? formatTime(feed.lastPollAt) : 'belum'}`
             : 'Memuat…'}
         </span>
         <button type="button" className="btn ghost" onClick={load} disabled={loading}>

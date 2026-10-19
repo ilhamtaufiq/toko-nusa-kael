@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import QRCode from 'qrcode';
 import { getJson, rupiah, type Product } from '../lib/api';
 import Scanner from './Scanner';
 
@@ -17,8 +16,6 @@ type Sale = {
   change: number;
 };
 type Feedback = { ok: boolean; text: string } | null;
-type QrisOrder = { order_id: string; total: number; expires_at: number; status: string; qr_string: string };
-type Method = 'cash' | 'qris';
 
 const readToken = () => {
   try {
@@ -155,24 +152,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState<Sale | null>(null);
-  const [method, setMethod] = useState<Method>('cash');
-  const [qris, setQris] = useState<QrisOrder | null>(null);
-  const [qrImage, setQrImage] = useState<string | null>(null);
 
-  // Gambar QR dibuat di browser dari data QR yang dikirim gateway
-  useEffect(() => {
-    if (!qris?.qr_string) {
-      setQrImage(null);
-      return;
-    }
-    let alive = true;
-    QRCode.toDataURL(qris.qr_string, { width: 260, margin: 1 })
-      .then((url) => alive && setQrImage(url))
-      .catch(() => alive && setQrImage(null));
-    return () => {
-      alive = false;
-    };
-  }, [qris?.qr_string]);
   const codeRef = useRef<HTMLInputElement>(null);
 
   // Bunyi scan: nada naik untuk berhasil, nada turun untuk gagal. Dibuat di browser, tanpa file audio.
@@ -263,12 +243,43 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     };
   }, [focusScan]);
 
+  // Notifikasi transaksi QRIS masuk. Transaksi yang sudah ada saat halaman dibuka tidak dibunyikan.
+  const seenTx = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const check = () =>
+      call<{ transactions: { id: string; amount: number }[] }>('/api/admin/transactions')
+        .then((r) => {
+          if (!alive) return;
+          if (seenTx.current === null) {
+            seenTx.current = new Set(r.transactions.map((t) => t.id));
+            return;
+          }
+          const fresh = r.transactions.filter((t) => !seenTx.current!.has(t.id));
+          r.transactions.forEach((t) => seenTx.current!.add(t.id));
+          if (fresh.length > 0) {
+            beep(true);
+            setFeedback({
+              ok: true,
+              text: `Pembayaran QRIS masuk: ${rupiah(fresh[0].amount)}${fresh.length > 1 ? ` (+${fresh.length - 1} lagi)` : ''}`,
+            });
+          }
+        })
+        .catch(() => {});
+    check();
+    const timer = window.setInterval(check, 30_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [call, beep]);
+
   const total = cart.reduce((sum, l) => sum + l.product.price * l.qty, 0);
   const count = cart.reduce((sum, l) => sum + l.qty, 0);
   const paid = Number(paidText) || 0;
   const change = paid - total;
   const short = paidText !== '' && change < 0;
-  const canPay = cart.length > 0 && (method === 'qris' || paid >= total) && !busy && !success && !qris;
+  const canPay = cart.length > 0 && paid >= total && !busy && !success;
 
   const categories = useMemo(() => Array.from(new Set(products.map((p) => p.category))), [products]);
 
@@ -376,60 +387,8 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
     focusScan();
   }
 
-  // Membuat QRIS dinamis dari Midtrans untuk total keranjang. Penjualan dicatat saat lunas.
-  async function createQris() {
-    setBusy(true);
-    try {
-      const r = await call<Omit<QrisOrder, 'status'>>('/api/admin/qris', {
-        // Nominal pas, tanpa kode unik
-        method: 'POST',
-        body: JSON.stringify({ items: cart.map((l) => ({ product_id: l.product.id, qty: l.qty })) }),
-      });
-      setQris({ ...r, status: 'pending' });
-      setFeedback({ ok: true, text: 'QRIS dibuat. Minta pelanggan scan kode.' });
-    } catch (x) {
-      setFeedback({ ok: false, text: (x as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Cek status QRIS tiap 3 detik sampai lunas, kedaluwarsa, atau gagal
-  useEffect(() => {
-    if (!qris || qris.status !== 'pending') return;
-    const timer = window.setInterval(async () => {
-      try {
-        const r = await call<{ status: string; sale_id: number | null }>(`/api/admin/qris/${qris.order_id}`);
-        if (r.status === 'paid') {
-          window.clearInterval(timer);
-          setQris(null);
-          setSuccess({
-            id: r.sale_id ?? 0,
-            created_at: Math.floor(Date.now() / 1000),
-            items: [],
-            total: qris.total,
-            paid: qris.total,
-            change: 0,
-          });
-          setCart([]);
-          setPaidText('');
-          setFeedback(null);
-          loadSales();
-          loadProducts();
-        } else if (r.status !== 'pending') {
-          window.clearInterval(timer);
-          setQris({ ...qris, status: r.status });
-        }
-      } catch (x) {
-        setFeedback({ ok: false, text: (x as Error).message });
-      }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [qris, call, loadSales, loadProducts]);
-
   async function checkout() {
     if (!canPay) return;
-    if (method === 'qris') return createQris();
     setBusy(true);
     try {
       const sale = await call<Sale>('/api/admin/sales', {
@@ -474,11 +433,9 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
 
   const payLabel = cart.length === 0
     ? 'Tambah barang dulu'
-    : method === 'qris'
-      ? `Buat QRIS ${rupiah(total)}`
-      : paid < total
-        ? `Kurang ${rupiah(total - paid)}`
-        : 'Bayar & simpan';
+    : paid < total
+      ? `Kurang ${rupiah(total - paid)}`
+      : 'Bayar & simpan';
 
   return (
     <div className="kasir">
@@ -642,17 +599,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
             <strong>{rupiah(total)}</strong>
           </div>
 
-          <div className="k-method" role="group" aria-label="Metode pembayaran">
-            <button type="button" className="k-chip" aria-pressed={method === 'cash'} onClick={() => setMethod('cash')}>
-              Tunai
-            </button>
-            <button type="button" className="k-chip" aria-pressed={method === 'qris'} onClick={() => setMethod('qris')}>
-              QRIS
-            </button>
-          </div>
-
-          {method === 'cash' && (
-            <>
+          <>
           <label className="k-paid-label" htmlFor="k-paid">Uang diterima</label>
           <input
             id="k-paid"
@@ -676,9 +623,7 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
             <span>{short ? 'Kurang' : 'Kembalian'}</span>
             <strong>{paidText ? rupiah(Math.abs(change)) : '—'}</strong>
           </div>
-
-            </>
-          )}
+          </>
 
           <button type="button" className="k-pay" disabled={!canPay} onClick={checkout}>
             {busy ? 'Menyimpan…' : payLabel}
@@ -696,35 +641,6 @@ function Till({ token, onExpire }: { token: string; onExpire: () => void }) {
         </div>
         <a href="#bayar">Bayar</a>
       </div>
-
-      {qris && (
-        <div className="k-modal" role="dialog" aria-modal="true" aria-label="Pembayaran QRIS">
-          <div className="k-card">
-            <p>Scan untuk bayar</p>
-            {qrImage ? (
-              <img className="k-qr" src={qrImage} alt="Kode QRIS" width={260} height={260} />
-            ) : (
-              <p className="k-empty">Membuat kode QR…</p>
-            )}
-            <strong className="k-big">{rupiah(qris.total)}</strong>
-            <small>
-              {qris.status === 'pending' && 'Menunggu pembayaran…'}
-              {qris.status === 'expired' && 'QR kedaluwarsa. Buat ulang.'}
-              {qris.status === 'failed' && 'Pembayaran gagal. Buat ulang.'}
-              {qris.status === 'review' && 'Sudah dibayar, tetapi stok tidak cukup. Cek manual.'}
-            </small>
-            {qris.status === 'pending' ? (
-              <button type="button" className="k-clear" onClick={() => setQris(null)}>
-                Tutup (pembayaran tetap dicatat jika lunas)
-              </button>
-            ) : (
-              <button type="button" className="k-pay" onClick={() => setQris(null)} autoFocus>
-                Tutup
-              </button>
-            )}
-          </div>
-        </div>
-      )}
 
       {success && (
         <div className="k-modal" role="dialog" aria-modal="true" aria-label="Transaksi berhasil">

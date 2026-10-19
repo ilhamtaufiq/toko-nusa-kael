@@ -8,10 +8,7 @@ services:
       - "8080"
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Isi ADMIN_PASSWORD (min. 8 karakter) di file .env}
-      # Midtrans (QRIS). Kosongkan untuk menonaktifkan QRIS. Pakai server key sandbox dulu.
-      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
-      MIDTRANS_API_BASE: ${MIDTRANS_API_BASE:-https://api.sandbox.midtrans.com}
-      # Gateway GoPay (service internal, tidak dibuka ke publik)
+      # Gateway pemantau transaksi QRIS GoBiz (service internal, tidak dibuka ke publik)
       GATEWAY_URL: http://gateway:3100
       GATEWAY_SECRET: ${GATEWAY_SECRET:?Isi GATEWAY_SECRET (min. 32 karakter) di file .env}
       DATABASE_URL: mysql://${DB_USER:-nusa}:${DB_PASSWORD:?Isi DB_PASSWORD di file .env}@db:3306/${DB_NAME:-nusa_kael}
@@ -28,8 +25,9 @@ services:
     # Tidak ada ports: gateway hanya bisa dihubungi dari service nusa-kael di jaringan Docker
     environment:
       GATEWAY_SECRET: ${GATEWAY_SECRET:?Isi GATEWAY_SECRET (min. 32 karakter) di file .env}
-      GOPAY_MERCHANT_ID: ${GOPAY_MERCHANT_ID:-}
-      GOPAY_STATIC_QRIS: ${GOPAY_STATIC_QRIS:-}
+      # Kredensial login GoBiz (email dan kata sandi login). Jangan commit file .env.
+      GOPAY_EMAIL: ${GOPAY_EMAIL:-}
+      GOPAY_PASSWORD: ${GOPAY_PASSWORD:-}
     volumes:
       - gateway_data:/data
 

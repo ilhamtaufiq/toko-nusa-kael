@@ -3,9 +3,10 @@ import { rupiah, type Product, type Promo, type Settings } from '../lib/api';
 import Scanner from './Scanner';
 import Analytics from './Analytics';
 import GopayLogin from './GopayLogin';
+import LiveTransactions from './LiveTransactions';
 
 type Subscriber = { id: number; name: string; whatsapp: string; created_at: number };
-type Tab = 'produk' | 'analisa' | 'promo' | 'pelanggan' | 'pengaturan';
+type Tab = 'produk' | 'analisa' | 'promo' | 'pelanggan' | 'transaksi' | 'pengaturan';
 
 const KEY = 'nk_admin_token';
 const CATEGORIES = ['Sembako', 'Segar', 'Minuman', 'Camilan', 'Rumah'];
@@ -127,7 +128,7 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
       <header className="admin-bar">
         <h1>Admin Nusa Kael</h1>
         <div className="tabs" role="group" aria-label="Bagian admin">
-          {(['produk', 'analisa', 'promo', 'pelanggan', 'pengaturan'] as Tab[]).map((t) => (
+          {(['produk', 'analisa', 'promo', 'pelanggan', 'transaksi', 'pengaturan'] as Tab[]).map((t) => (
             <button key={t} className="tab" aria-pressed={tab === t} onClick={() => setTab(t)}>
               {t[0].toUpperCase() + t.slice(1)}
             </button>
@@ -142,6 +143,7 @@ function Panel({ token, onExpire }: { token: string; onExpire: () => void }) {
       {tab === 'analisa' && <Analytics call={call} />}
       {tab === 'promo' && <Promos call={call} />}
       {tab === 'pelanggan' && <Subscribers call={call} />}
+      {tab === 'transaksi' && <LiveTransactions call={call} />}
       {tab === 'pengaturan' && (
         <>
           <ShopSettings call={call} />

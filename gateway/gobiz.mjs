@@ -17,20 +17,33 @@ export class GobizError extends Error {
   }
 }
 
+// Header identik dengan getAuthHeaders di gobiz-payment. GoBiz menolak request yang header identitasnya kurang.
 function authHeaders(accessToken) {
   return {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'id',
     'Authentication-Type': 'go-id',
     'Authorization': accessToken ? `Bearer ${accessToken}` : 'Bearer',
+    'Connection': 'keep-alive',
     'Content-Type': 'application/json',
     'Gojek-Country-Code': 'ID',
     'Gojek-Timezone': TIMEZONE,
     'Origin': 'https://portal.gofoodmerchant.co.id',
     'Referer': 'https://portal.gofoodmerchant.co.id/',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'X-AppVersion': 'platform-v3.107.0-94ce5d57',
+    'X-PhoneMake': 'Windows 10 64-bit',
+    'X-PhoneModel': 'Chrome 149.0.0.0 on Windows 10 64-bit',
     'X-Platform': 'Web',
+    'X-User-Locale': 'en-US',
     'X-User-Type': 'merchant',
+    'sec-ch-ua': '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'x-DeviceOS': 'Web',
     'x-appId': 'go-biz-web-dashboard',
     'x-uniqueid': randomUUID(),
   };
